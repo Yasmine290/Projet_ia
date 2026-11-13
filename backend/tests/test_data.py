@@ -117,3 +117,59 @@ def test_failed_delete_restores_pdf(api, monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert original_path.exists()
     assert client.get(f"/api/documents/{document_id}").status_code == 200
+
+
+def test_extract_document_segments_with_page_references(api) -> None:
+    """Les passages conservent leurs références et leur ordre entre deux lectures."""
+    client, _, _ = api
+    course_id = client.post("/api/courses", json={"title": "Cours"}).json()["id"]
+    with pymupdf.open() as pdf:
+        pdf.new_page().insert_text((72, 72), "Texte de la premiere page.")
+        pdf.new_page().insert_text((72, 72), "Texte de la deuxieme page.")
+        content = pdf.tobytes()
+    response = client.post(
+        f"/api/courses/{course_id}/documents",
+        files={"file": ("cours.pdf", content, "application/pdf")},
+    )
+    assert response.status_code == 201, response.text
+    document_id = response.json()["id"]
+    result = client.get(f"/api/documents/{document_id}/segments")
+    assert result.status_code == 200
+    segments = result.json()
+    assert [segment["page"] for segment in segments] == [1, 2]
+    assert [segment["content"] for segment in segments] == [
+        "Texte de la premiere page.",
+        "Texte de la deuxieme page.",
+    ]
+    assert all(segment["document_id"] == document_id for segment in segments)
+    assert all(segment["course_id"] == course_id for segment in segments)
+    assert len({segment["id"] for segment in segments}) == 2
+    assert client.get(f"/api/documents/{document_id}/segments").json() == segments
+
+
+def test_extract_segments_reports_missing_text_and_missing_document(api) -> None:
+    """Un PDF sans texte ne doit pas produire une liste de passages trompeuse."""
+    client, _, _ = api
+    course_id = client.post("/api/courses", json={"title": "Cours"}).json()["id"]
+    response = client.post(
+        f"/api/courses/{course_id}/documents",
+        files={"file": ("scan.pdf", pdf_bytes(False), "application/pdf")},
+    )
+    result = client.get(f"/api/documents/{response.json()['id']}/segments")
+    assert result.status_code == 422
+    assert "OCR" in result.json()["detail"]
+    assert client.get("/api/documents/999/segments").status_code == 404
+
+
+def test_extract_segments_reports_missing_file(api) -> None:
+    """Un fichier disparu ne doit pas être présenté comme un document indexable."""
+    client, tmp_path, _ = api
+    course_id = client.post("/api/courses", json={"title": "Cours"}).json()["id"]
+    response = client.post(
+        f"/api/courses/{course_id}/documents",
+        files={"file": ("cours.pdf", pdf_bytes(), "application/pdf")},
+    )
+    next((tmp_path / "uploads").iterdir()).unlink()
+    result = client.get(f"/api/documents/{response.json()['id']}/segments")
+    assert result.status_code == 422
+    assert "inaccessible" in result.json()["detail"]

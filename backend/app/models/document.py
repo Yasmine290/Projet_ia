@@ -13,11 +13,14 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # La clé étrangère relie le document à un cours existant.
     course_id: Mapped[int] = mapped_column(
         ForeignKey("courses.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    # Le nom original est affiché ; le nom de stockage est généré par l'application.
     original_name: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_name: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
     page_count: Mapped[int] = mapped_column(nullable=False)
+    # Un PDF avec du texte attend l'indexation ; un PDF sans texte nécessite l'OCR.
     status: Mapped[str] = mapped_column(String(30), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

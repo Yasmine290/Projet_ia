@@ -15,3 +15,14 @@ class DocumentRead(BaseModel):
     page_count: int
     status: Literal["pending_indexing", "ocr_required"]
     created_at: datetime
+
+
+class DocumentSegment(BaseModel):
+    """Passage associé à son document et à sa page d'origine (numérotée dès 1)."""
+
+    id: str
+    document_id: int
+    course_id: int
+    page: int
+    position: int
+    content: str

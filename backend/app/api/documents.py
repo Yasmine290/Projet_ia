@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
@@ -10,8 +9,8 @@ from app.api.courses import find_course
 from app.core.config import Settings, get_settings
 from app.db.database import get_session
 from app.models.document import Document
-from app.schemas.document import DocumentRead
-from app.services.documents import store_pdf
+from app.schemas.document import DocumentRead, DocumentSegment
+from app.services.documents import extract_segments, resolve_document_path, store_pdf
 
 router = APIRouter(prefix="/api", tags=["documents"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -19,6 +18,7 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 def find_document(session: Session, document_id: int) -> Document:
+    """Recherche les métadonnées d'un document ou renvoie une erreur 404."""
     document = session.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document introuvable.")
@@ -29,6 +29,7 @@ def find_document(session: Session, document_id: int) -> Document:
 async def upload_document(
     course_id: int, file: UploadFile, session: SessionDep, settings: SettingsDep
 ) -> Document:
+    """Stocke un PDF valide puis associe ses métadonnées au cours choisi."""
     find_course(session, course_id)
     name, page_count, processing_status = await store_pdf(
         file, settings.resolved_upload_dir, settings.max_upload_bytes
@@ -46,6 +47,7 @@ async def upload_document(
         session.add(document)
         session.commit()
     except Exception:
+        # Si SQLite refuse l'enregistrement, le PDF ne doit pas rester orphelin.
         session.rollback()
         (settings.resolved_upload_dir / name).unlink(missing_ok=True)
         raise
@@ -55,6 +57,7 @@ async def upload_document(
 
 @router.get("/courses/{course_id}/documents", response_model=list[DocumentRead])
 def list_documents(course_id: int, session: SessionDep) -> list[Document]:
+    """Retourne les documents associés à un cours existant."""
     find_course(session, course_id)
     return list(
         session.scalars(
@@ -65,18 +68,27 @@ def list_documents(course_id: int, session: SessionDep) -> list[Document]:
 
 @router.get("/documents/{document_id}", response_model=DocumentRead)
 def read_document(document_id: int, session: SessionDep) -> Document:
+    """Retourne les métadonnées publiques et l'état d'un document."""
     return find_document(session, document_id)
+
+
+@router.get("/documents/{document_id}/segments", response_model=list[DocumentSegment])
+def read_document_segments(
+    document_id: int, session: SessionDep, settings: SettingsDep
+) -> list[DocumentSegment]:
+    """Extrait les passages avec leurs pages pour préparer une future indexation."""
+    document = find_document(session, document_id)
+    path = resolve_document_path(settings.resolved_upload_dir, document.storage_name)
+    return extract_segments(
+        path, document.id, document.course_id, settings.chunk_size
+    )
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_document(document_id: int, session: SessionDep, settings: SettingsDep) -> Response:
+    """Supprime un document et son fichier avec restauration en cas d'échec SQLite."""
     document = find_document(session, document_id)
-    # Refuse tout chemin corrompu au lieu de sortir du répertoire d'importation.
-    if Path(document.storage_name).name != document.storage_name:
-        raise HTTPException(status_code=500, detail="Chemin de document invalide.")
-    path = settings.resolved_upload_dir / document.storage_name
-    if path.is_symlink():
-        raise HTTPException(status_code=500, detail="Lien de document non autorisé.")
+    path = resolve_document_path(settings.resolved_upload_dir, document.storage_name)
     temporary_path = path.with_name(f"{path.name}.{uuid4().hex}.deleting")
     try:
         # Conserver le fichier jusqu'à la confirmation de la transaction SQLite.

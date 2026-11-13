@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     chroma_path: Path = Path("data/chroma")
     upload_dir: Path = Path("data/uploads")
     max_upload_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    chunk_size: int = Field(default=1000, ge=64, le=5000)
     cors_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",

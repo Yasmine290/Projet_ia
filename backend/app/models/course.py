@@ -18,4 +18,5 @@ class Course(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # L'heure UTC permet de comparer les dates sans dépendre du fuseau local.
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

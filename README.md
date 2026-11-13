@@ -75,6 +75,9 @@ Ne commitez pas le fichier `.env`.
   supprimer un cours. Les documents doivent être supprimés avant leur cours.
 - `POST`, `GET /api/courses/{course_id}/documents` : importer ou lister les PDF.
 - `GET`, `DELETE /api/documents/{document_id}` : consulter ou supprimer un PDF.
+- `GET /api/documents/{document_id}/segments` : extraire le texte page par page
+  et le découper en passages avec leurs références. Ce calcul ne stocke ni
+  n'indexe les passages ; il est effectué à chaque appel.
 
 Les PDF sont limités à 10 Mio par défaut (`MAX_UPLOAD_BYTES`). Un fichier sans
 texte reçoit le statut `ocr_required` ; l'OCR n'est pas pris en charge.
@@ -85,6 +88,11 @@ La détection OCR indique seulement l'absence de texte dans tout le document :
 elle ne détecte pas les pages scannées au sein d'un document mixte.
 En cas d'interruption pendant une suppression, un fichier temporaire se terminant
 par `.deleting` peut nécessiter une vérification manuelle dans `backend/data/uploads/`.
+
+Le découpage limite chaque passage à `CHUNK_SIZE` caractères (1000 par défaut,
+entre 64 et 5000). Il privilégie les fins de phrase puis les espaces, et conserve
+le numéro de page. Les blancs sont normalisés ; le contenu et l'ordre exacts
+peuvent dépendre de l'extraction de PyMuPDF et de la mise en page du PDF.
 
 ## Tests
 
