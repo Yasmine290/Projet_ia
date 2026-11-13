@@ -49,6 +49,8 @@ async def upload_document(
         settings.max_upload_bytes,
         settings.max_archive_entries,
         settings.max_expanded_bytes,
+        settings.libreoffice_path,
+        settings.legacy_conversion_timeout_seconds,
     )
     # Le nom original sert uniquement à l'affichage, jamais à construire un chemin.
     original_name = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1][:255]

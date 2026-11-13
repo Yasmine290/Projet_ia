@@ -115,7 +115,24 @@ Ne l'exécutez que si ce transfert est souhaité.
   en passages avec leurs références. Ce calcul ne stocke ni
   n'indexe les passages ; il est effectué à chaque appel.
 
-Formats actuellement acceptés : PDF, DOCX, PPTX et TXT. La taille d'import est
+Formats actuellement acceptés : PDF, DOCX, PPTX, TXT, DOC et PPT. DOC/PPT sont
+convertis localement par LibreOffice en DOCX/PPTX lors de l'import ; le fichier
+converti est stocké, tandis que le nom et le format d'origine sont conservés dans
+les métadonnées. Si LibreOffice est absent, l'import DOC/PPT renvoie une erreur
+claire et les autres formats continuent de fonctionner.
+
+Installer LibreOffice sur chaque ordinateur qui doit importer DOC/PPT :
+
+- Windows/macOS : [télécharger LibreOffice](https://www.libreoffice.org/download/download/).
+- Si `soffice` n'est pas détecté automatiquement, définir `LIBREOFFICE_PATH`
+  dans `backend/.env` avec le chemin vers l'exécutable `soffice`.
+
+La conversion s'exécute sans shell, avec un profil temporaire isolé et un délai
+maximum de 60 secondes (`LEGACY_CONVERSION_TIMEOUT_SECONDS`). Elle traite un
+document local non fiable ; gardez le prototype hors d'Internet, maintenez
+LibreOffice à jour, et n'importez que des fichiers de confiance.
+
+La taille d'import est
 limitée à 10 Mio par défaut (`MAX_UPLOAD_BYTES`). Les archives Office sont aussi
 limitées à 5000 entrées et 100 Mio décompressés (`MAX_ARCHIVE_ENTRIES`,
 `MAX_EXPANDED_BYTES`) pour réduire le risque d'archive malveillante.

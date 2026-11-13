@@ -1,5 +1,9 @@
 from io import BytesIO
+import asyncio
 import re
+import shutil
+import subprocess
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +27,7 @@ from app.schemas.document import DocumentSegment
 
 SUPPORTED_FORMATS = {"pdf", "docx", "pptx", "txt"}
 LEGACY_FORMATS = {"doc", "ppt"}
+CONVERTED_FORMATS = {"doc": "docx", "ppt": "pptx"}
 PDF_MIME_HEADER = b"%PDF-"
 OFFICE_REQUIRED_MEMBERS = {
     "docx": {"[Content_Types].xml", "word/document.xml"},
@@ -88,6 +93,66 @@ def _validate_office_archive(
         raise HTTPException(status_code=415, detail="Le fichier Office n'est pas une archive valide.") from exc
 
 
+def _find_libreoffice(configured_path: str | None) -> str | None:
+    """Utilise le chemin configuré ou cherche LibreOffice dans le PATH du système."""
+    if configured_path:
+        configured = shutil.which(configured_path)
+        if configured:
+            return configured
+        if Path(configured_path).is_file():
+            return str(Path(configured_path).resolve())
+        return None
+    return shutil.which("soffice") or shutil.which("libreoffice")
+
+
+async def _convert_legacy_office(
+    executable: str, source_path: Path, output_path: Path, timeout_seconds: int
+) -> None:
+    """Convertit un ancien document dans un profil LibreOffice temporaire isolé."""
+    profile_path = output_path.parent / f"profile-{uuid4().hex}"
+    profile_path.mkdir()
+    command = [
+        executable,
+        "--headless",
+        "--nologo",
+        "--nodefault",
+        "--nolockcheck",
+        f"-env:UserInstallation={profile_path.as_uri()}",
+        "--convert-to",
+        output_path.suffix.lstrip("."),
+        "--outdir",
+        str(output_path.parent),
+        str(source_path),
+    ]
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503, detail="Impossible de démarrer LibreOffice pour convertir ce fichier."
+        ) from exc
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise HTTPException(
+            status_code=422, detail="La conversion du document a dépassé le délai autorisé."
+        ) from exc
+    except asyncio.CancelledError:
+        # Un client qui se déconnecte ne doit pas laisser une conversion tourner en arrière-plan.
+        process.kill()
+        await process.wait()
+        raise
+    if process.returncode != 0 or not output_path.is_file():
+        raise HTTPException(
+            status_code=422, detail="LibreOffice n'a pas pu convertir ce document."
+        )
+
+
 def _extract_docx(path: Path) -> list[TextUnit]:
     """Lit les paragraphes et tableaux dans leur ordre d'apparition dans Word."""
     # Fournir les octets au parseur évite de laisser un handle sur disque ouvert.
@@ -144,8 +209,9 @@ def extract_text_units(
     """Extrait le texte en conservant le type et le numéro de chaque repère."""
     if not path.is_file():
         raise HTTPException(status_code=422, detail="Le fichier du document est inaccessible.")
+    extraction_format = CONVERTED_FORMATS.get(file_format, file_format)
     try:
-        if file_format == "pdf":
+        if extraction_format == "pdf":
             with pymupdf.open(path) as pdf:
                 if not pdf.is_pdf or pdf.needs_pass:
                     raise HTTPException(status_code=422, detail="PDF protégé ou invalide.")
@@ -153,15 +219,15 @@ def extract_text_units(
                     TextUnit("page", page_number, page.get_text())
                     for page_number, page in enumerate(pdf, start=1)
                 ]
-        if file_format == "txt":
+        if extraction_format == "txt":
             text = path.read_text(encoding="utf-8-sig")
             return [
                 TextUnit("line", line_number, line)
                 for line_number, line in enumerate(text.splitlines(), start=1)
             ]
-        if file_format in OFFICE_REQUIRED_MEMBERS:
-            _validate_office_archive(path, file_format, max_archive_entries, max_expanded_bytes)
-            if file_format == "docx":
+        if extraction_format in OFFICE_REQUIRED_MEMBERS:
+            _validate_office_archive(path, extraction_format, max_archive_entries, max_expanded_bytes)
+            if extraction_format == "docx":
                 return _extract_docx(path)
             return _extract_pptx(path)
     except HTTPException:
@@ -224,58 +290,109 @@ async def store_document(
     max_bytes: int,
     max_archive_entries: int,
     max_expanded_bytes: int,
+    libreoffice_path: str | None,
+    conversion_timeout_seconds: int,
 ) -> tuple[str, str, str, int | None, str]:
     """Valide et stocke un document sous un nom généré par l'application."""
     suffix = Path(file.filename or "").suffix.lower().lstrip(".")
-    if suffix in LEGACY_FORMATS:
-        raise HTTPException(
-            status_code=415,
-            detail=f"Le format .{suffix} nécessite une conversion LibreOffice, pas encore activée.",
-        )
     if suffix not in SUPPORTED_FORMATS:
-        raise HTTPException(status_code=415, detail="Formats acceptés : PDF, DOCX, PPTX et TXT.")
+        if suffix not in LEGACY_FORMATS:
+            await file.close()
+            raise HTTPException(status_code=415, detail="Formats acceptés : PDF, DOCX, PPTX, TXT, DOC et PPT.")
+
+    executable = _find_libreoffice(libreoffice_path) if suffix in LEGACY_FORMATS else None
+    if suffix in LEGACY_FORMATS and executable is None:
+        await file.close()
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"LibreOffice est nécessaire pour convertir les fichiers .{suffix}. "
+                "Installez-le ou configurez LIBREOFFICE_PATH."
+            ),
+        )
 
     upload_dir.mkdir(parents=True, exist_ok=True)
-    storage_name = f"{uuid4().hex}.{suffix}"
-    path = upload_dir / storage_name
-    size = 0
+    source_name = f"{uuid4().hex}.{suffix}"
+    source_format = suffix
+    extraction_format = CONVERTED_FORMATS.get(suffix, suffix)
+    unit_type = {
+        "pdf": "page",
+        "docx": "paragraph",
+        "pptx": "slide",
+        "txt": "line",
+        "doc": "paragraph",
+        "ppt": "slide",
+    }[suffix]
+    final_path: Path | None = None
     valid = False
-    created = False
     try:
-        # La lecture par blocs applique une limite même si le client ment sur la taille.
-        with path.open("xb") as destination:
-            created = True
-            while chunk := await file.read(64 * 1024):
-                size += len(chunk)
-                if size > max_bytes:
-                    raise HTTPException(status_code=413, detail="Le document dépasse la taille autorisée.")
-                destination.write(chunk)
+        # Le fichier source et le résultat converti restent dans un dossier temporaire.
+        with tempfile.TemporaryDirectory(prefix="studyai-import-", dir=upload_dir) as temporary_dir:
+            temporary_path = Path(temporary_dir)
+            source_path = temporary_path / source_name
+            size = 0
+            with source_path.open("xb") as destination:
+                # La lecture par blocs applique la limite même si le client ment sur la taille.
+                while chunk := await file.read(64 * 1024):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise HTTPException(
+                            status_code=413, detail="Le document dépasse la taille autorisée."
+                        )
+                    destination.write(chunk)
 
-        if suffix == "pdf":
-            with path.open("rb") as source:
-                if source.read(len(PDF_MIME_HEADER)) != PDF_MIME_HEADER:
-                    raise HTTPException(status_code=415, detail="Le fichier n'est pas un PDF valide.")
-        elif suffix in OFFICE_REQUIRED_MEMBERS:
-            _validate_office_archive(path, suffix, max_archive_entries, max_expanded_bytes)
-        else:
-            try:
-                text = path.read_text(encoding="utf-8-sig")
-            except UnicodeDecodeError as exc:
-                raise HTTPException(status_code=415, detail="Le fichier TXT doit être encodé en UTF-8.") from exc
-            if "\x00" in text:
-                raise HTTPException(status_code=415, detail="Le fichier TXT contient des octets nuls.")
+            if suffix in LEGACY_FORMATS:
+                converted_path = source_path.with_suffix(f".{extraction_format}")
+                await _convert_legacy_office(
+                    executable,
+                    source_path,
+                    converted_path,
+                    conversion_timeout_seconds,
+                )
+                content_path = converted_path
+            else:
+                content_path = source_path
 
-        units = extract_text_units(path, suffix, max_archive_entries, max_expanded_bytes)
-        unit_type = {"pdf": "page", "docx": "paragraph", "pptx": "slide", "txt": "line"}[suffix]
-        unit_count = len(units)
-        has_text = any(unit.content.strip() for unit in units)
-        if suffix == "pdf" and not has_text:
-            processing_status = "ocr_required"
-        else:
-            processing_status = "pending_indexing" if has_text else "no_text"
-        valid = True
-        return storage_name, suffix, unit_type, unit_count, processing_status
+            if content_path.stat().st_size > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Le fichier converti dépasse la taille maximale autorisée.",
+                )
+            if extraction_format == "pdf":
+                with content_path.open("rb") as source:
+                    if source.read(len(PDF_MIME_HEADER)) != PDF_MIME_HEADER:
+                        raise HTTPException(status_code=415, detail="Le fichier n'est pas un PDF valide.")
+            elif extraction_format in OFFICE_REQUIRED_MEMBERS:
+                _validate_office_archive(
+                    content_path, extraction_format, max_archive_entries, max_expanded_bytes
+                )
+            else:
+                try:
+                    text = content_path.read_text(encoding="utf-8-sig")
+                except UnicodeDecodeError as exc:
+                    raise HTTPException(
+                        status_code=415, detail="Le fichier TXT doit être encodé en UTF-8."
+                    ) from exc
+                if "\x00" in text:
+                    raise HTTPException(status_code=415, detail="Le fichier TXT contient des octets nuls.")
+
+            units = extract_text_units(
+                content_path, extraction_format, max_archive_entries, max_expanded_bytes
+            )
+            unit_count = len(units)
+            has_text = any(unit.content.strip() for unit in units)
+            if extraction_format == "pdf" and not has_text:
+                processing_status = "ocr_required"
+            else:
+                processing_status = "pending_indexing" if has_text else "no_text"
+
+            # Seul le fichier normalisé est gardé ; le document source est supprimé.
+            storage_name = f"{uuid4().hex}.{extraction_format}"
+            final_path = upload_dir / storage_name
+            content_path.replace(final_path)
+            valid = True
+            return storage_name, source_format, unit_type, unit_count, processing_status
     finally:
-        if created and not valid:
-            path.unlink(missing_ok=True)
+        if final_path is not None and not valid:
+            final_path.unlink(missing_ok=True)
         await file.close()

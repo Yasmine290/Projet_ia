@@ -1,11 +1,15 @@
 from io import BytesIO
+import asyncio
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from docx import Document as WordDocument
 from pptx import Presentation
 from pptx.util import Inches
+import pytest
+from fastapi import HTTPException
 
 from test_data import api
+from app.services import documents as document_service
 
 
 def make_docx() -> bytes:
@@ -99,10 +103,13 @@ def test_pptx_upload_extracts_slide_references(api) -> None:
     assert segments[0]["content"] == "Objectif du cours."
 
 
-def test_rejects_spoofed_archives_legacy_formats_and_non_utf8_text(api) -> None:
+def test_rejects_spoofed_archives_legacy_without_converter_and_non_utf8_text(
+    api, monkeypatch
+) -> None:
     client, tmp_path, _ = api
     course_id = client.post("/api/courses", json={"title": "Sécurité"}).json()["id"]
     endpoint = f"/api/courses/{course_id}/documents"
+    monkeypatch.setattr(document_service, "_find_libreoffice", lambda configured: None)
     bad_archive = BytesIO()
     with ZipFile(bad_archive, "w", ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", "<Types/>")
@@ -110,8 +117,8 @@ def test_rejects_spoofed_archives_legacy_formats_and_non_utf8_text(api) -> None:
 
     cases = [
         ("fake.docx", bad_archive.getvalue(), 415),
-        ("ancien.doc", b"ancien Word", 415),
-        ("ancien.ppt", b"ancien PowerPoint", 415),
+        ("ancien.doc", b"ancien Word", 503),
+        ("ancien.ppt", b"ancien PowerPoint", 503),
         ("texte.txt", b"\xff\xfe", 415),
         ("notes.exe", b"contenu", 415),
     ]
@@ -167,3 +174,89 @@ def test_malformed_office_xml_returns_client_error_not_server_error(api) -> None
     )
     assert response.status_code == 422, response.text
     assert list((tmp_path / "uploads").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("legacy_name", "converted_extension", "create_content", "expected_location"),
+    [
+        ("ancien.doc", ".docx", make_docx, "paragraph"),
+        ("ancien.ppt", ".pptx", make_pptx, "slide"),
+    ],
+)
+def test_legacy_office_upload_uses_configured_converter(
+    api, monkeypatch, legacy_name, converted_extension, create_content, expected_location
+) -> None:
+    """DOC/PPT passent par le convertisseur puis l'extraction Office standard."""
+    client, tmp_path, _ = api
+    course_id = client.post("/api/courses", json={"title": "Ancien cours"}).json()["id"]
+    monkeypatch.setattr(document_service, "_find_libreoffice", lambda configured: "soffice-test")
+
+    async def fake_conversion(executable, source_path, output_path, timeout_seconds):
+        assert executable == "soffice-test"
+        assert source_path.suffix == f".{legacy_name.rsplit('.', 1)[1]}"
+        assert output_path.suffix == converted_extension
+        assert timeout_seconds == 60
+        output_path.write_bytes(create_content())
+
+    monkeypatch.setattr(document_service, "_convert_legacy_office", fake_conversion)
+    response = client.post(
+        f"/api/courses/{course_id}/documents",
+        files={"file": (legacy_name, b"legacy office content", "application/octet-stream")},
+    )
+    assert response.status_code == 201, response.text
+    metadata = response.json()
+    assert metadata["file_format"] == legacy_name.rsplit(".", 1)[1]
+    assert metadata["original_name"] == legacy_name
+    assert metadata["unit_type"] == expected_location
+    assert len(list((tmp_path / "uploads").iterdir())) == 1
+    stored_path = next((tmp_path / "uploads").iterdir())
+    assert stored_path.suffix == converted_extension
+    segments = client.get(f"/api/documents/{metadata['id']}/segments").json()
+    assert segments[0]["location_type"] == expected_location
+
+
+def test_legacy_office_upload_explains_missing_libreoffice(api, monkeypatch) -> None:
+    """Sans LibreOffice, les anciens formats échouent sans laisser de fichier."""
+    client, tmp_path, _ = api
+    course_id = client.post("/api/courses", json={"title": "Ancien cours"}).json()["id"]
+    monkeypatch.setattr(document_service, "_find_libreoffice", lambda configured: None)
+    response = client.post(
+        f"/api/courses/{course_id}/documents",
+        files={"file": ("ancien.doc", b"legacy content", "application/msword")},
+    )
+    assert response.status_code == 503
+    assert "LibreOffice" in response.json()["detail"]
+    assert not (tmp_path / "uploads").exists()
+
+
+def test_legacy_converter_uses_timeout_and_argument_list(tmp_path, monkeypatch) -> None:
+    """Le convertisseur ne passe pas par un shell et interrompt les traitements bloqués."""
+    source = tmp_path / "un document.doc"
+    output = tmp_path / "un document.docx"
+    source.write_bytes(b"contenu")
+    calls = []
+
+    class HungProcess:
+        returncode = None
+
+        async def wait(self):
+            if self.returncode is None:
+                await asyncio.sleep(10)
+
+        def kill(self):
+            self.returncode = -9
+
+    async def start(*args, **kwargs):
+        calls.append((args, kwargs))
+        return HungProcess()
+
+    monkeypatch.setattr(document_service.asyncio, "create_subprocess_exec", start)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(document_service._convert_legacy_office("soffice-test", source, output, 1))
+    assert error.value.status_code == 422
+    command, options = calls[0]
+    assert command[0] == "soffice-test"
+    assert command[-1] == str(source)
+    assert "--convert-to" in command
+    assert options["stdout"] == document_service.subprocess.DEVNULL
+    assert options["stderr"] == document_service.subprocess.DEVNULL

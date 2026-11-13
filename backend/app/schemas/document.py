@@ -12,7 +12,7 @@ class DocumentRead(BaseModel):
     id: int
     course_id: int
     original_name: str
-    file_format: Literal["pdf", "docx", "pptx", "txt"]
+    file_format: Literal["pdf", "docx", "pptx", "txt", "doc", "ppt"]
     unit_type: Literal["page", "slide", "paragraph", "line"]
     unit_count: int | None
     status: Literal["pending_indexing", "ocr_required", "no_text"]

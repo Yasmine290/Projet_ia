@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     max_upload_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     max_archive_entries: int = Field(default=5000, gt=0)
     max_expanded_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
+    libreoffice_path: str | None = None
+    legacy_conversion_timeout_seconds: int = Field(default=60, gt=0, le=600)
     chunk_size: int = Field(default=1000, ge=64, le=5000)
     cors_origins: list[str] = [
         "http://localhost:5173",
