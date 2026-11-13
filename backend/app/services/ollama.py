@@ -58,6 +58,7 @@ class OllamaService:
                 message="La réponse d'Ollama ne contient pas une liste de modèles valide.",
             )
 
+        # La liste vient d'Ollama : on ne suppose pas que le modèle est installé.
         installed_names = {
             model.get("name")
             for model in models

@@ -11,6 +11,7 @@ client = TestClient(app)
 
 
 def test_ollama_status_reports_installed_model() -> None:
+    """Simule Ollama pour vérifier la détection du modèle sans le télécharger."""
     def respond(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"models": [{"name": "qwen3:4b"}]})
 
@@ -27,6 +28,7 @@ def test_ollama_status_reports_installed_model() -> None:
 
 
 def test_ollama_status_reports_missing_model() -> None:
+    """Vérifie que l'API signale le modèle absent et propose son installation."""
     def respond(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"models": []})
 
@@ -44,6 +46,7 @@ def test_ollama_status_reports_missing_model() -> None:
 
 
 def test_ollama_status_handles_unavailable_service() -> None:
+    """Une panne d'Ollama ne doit pas faire échouer le backend."""
     def fail(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
 
@@ -61,6 +64,7 @@ def test_ollama_status_handles_unavailable_service() -> None:
 
 
 def test_ollama_status_endpoint_uses_service_dependency() -> None:
+    """Remplace le service réseau pour tester la route indépendamment d'Ollama."""
     async def fake_status() -> OllamaStatus:
         return OllamaStatus(
             is_available=True,
