@@ -12,17 +12,20 @@ class DocumentRead(BaseModel):
     id: int
     course_id: int
     original_name: str
-    page_count: int
-    status: Literal["pending_indexing", "ocr_required"]
+    file_format: Literal["pdf", "docx", "pptx", "txt"]
+    unit_type: Literal["page", "slide", "paragraph", "line"]
+    unit_count: int | None
+    status: Literal["pending_indexing", "ocr_required", "no_text"]
     created_at: datetime
 
 
 class DocumentSegment(BaseModel):
-    """Passage associé à son document et à sa page d'origine (numérotée dès 1)."""
+    """Passage référencé selon la structure propre à son format."""
 
     id: str
     document_id: int
     course_id: int
-    page: int
+    location_type: Literal["page", "slide", "paragraph", "line"]
+    location_number: int
     position: int
     content: str

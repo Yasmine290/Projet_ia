@@ -20,7 +20,7 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     database_path = tmp_path / "test.sqlite"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
-    monkeypatch.setenv("MAX_UPLOAD_BYTES", "4096")
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", "100000")
     get_settings.cache_clear()
     get_engine.cache_clear()
     config = Config(str(BACKEND_DIR / "alembic.ini"))
@@ -74,7 +74,9 @@ def test_pdf_lifecycle_and_course_deletion_protection(api) -> None:
     assert response.status_code == 201, response.text
     document = response.json()
     assert document["original_name"] == "notes.pdf"
-    assert document["page_count"] == 1
+    assert document["file_format"] == "pdf"
+    assert document["unit_type"] == "page"
+    assert document["unit_count"] == 1
     assert document["status"] == "pending_indexing"
     assert "storage_name" not in document
     files = list((tmp_path / "uploads").iterdir())
@@ -93,7 +95,7 @@ def test_pdf_rejections_and_ocr_status(api) -> None:
     url = f"/api/courses/{course_id}/documents"
     assert client.post(url, files={"file": ("fake.pdf", b"not a pdf", "application/pdf")}).status_code == 415
     assert client.post(url, files={"file": ("test.pdf", pdf_bytes(password=True), "application/pdf")}).status_code == 422
-    assert client.post(url, files={"file": ("large.pdf", b"x" * 4097, "application/pdf")}).status_code == 413
+    assert client.post(url, files={"file": ("large.pdf", b"x" * 100001, "application/pdf")}).status_code == 413
     assert list((tmp_path / "uploads").iterdir()) == []
     response = client.post(url, files={"file": ("scan.pdf", pdf_bytes(False), "application/pdf")})
     assert response.status_code == 201
@@ -141,7 +143,10 @@ def test_extract_document_segments_with_page_references(api) -> None:
     result = client.get(f"/api/documents/{document_id}/segments")
     assert result.status_code == 200
     segments = result.json()
-    assert [segment["page"] for segment in segments] == [1, 2]
+    assert [(segment["location_type"], segment["location_number"]) for segment in segments] == [
+        ("page", 1),
+        ("page", 2),
+    ]
     assert [segment["content"] for segment in segments] == [
         "Texte de la premiere page.",
         "Texte de la deuxieme page.",

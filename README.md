@@ -109,29 +109,40 @@ Ne l'exécutez que si ce transfert est souhaité.
 - `POST /api/courses`, `GET /api/courses` : créer et lister les cours.
 - `GET`, `PATCH`, `DELETE /api/courses/{course_id}` : consulter, modifier et
   supprimer un cours. Les documents doivent être supprimés avant leur cours.
-- `POST`, `GET /api/courses/{course_id}/documents` : importer ou lister les PDF.
-- `GET`, `DELETE /api/documents/{document_id}` : consulter ou supprimer un PDF.
-- `GET /api/documents/{document_id}/segments` : extraire le texte page par page
-  et le découper en passages avec leurs références. Ce calcul ne stocke ni
+- `POST`, `GET /api/courses/{course_id}/documents` : importer ou lister les documents.
+- `GET`, `DELETE /api/documents/{document_id}` : consulter ou supprimer un document.
+- `GET /api/documents/{document_id}/segments` : extraire le texte et le découper
+  en passages avec leurs références. Ce calcul ne stocke ni
   n'indexe les passages ; il est effectué à chaque appel.
 
-Les PDF sont limités à 10 Mio par défaut (`MAX_UPLOAD_BYTES`). Un fichier sans
-texte reçoit le statut `ocr_required` ; l'OCR n'est pas pris en charge.
-Les autres reçoivent `pending_indexing` : l'indexation, la recherche RAG et les
-réponses générées ne sont pas encore implémentées. Ce prototype reste local :
+Formats actuellement acceptés : PDF, DOCX, PPTX et TXT. La taille d'import est
+limitée à 10 Mio par défaut (`MAX_UPLOAD_BYTES`). Les archives Office sont aussi
+limitées à 5000 entrées et 100 Mio décompressés (`MAX_ARCHIVE_ENTRIES`,
+`MAX_EXPANDED_BYTES`) pour réduire le risque d'archive malveillante.
+Les repères d'extraction sont les pages PDF, toutes les diapositives PPTX, les
+blocs (paragraphes et tableaux) DOCX, et les lignes TXT. `unit_count` donne le
+nombre de repères du format ; les unités vides ne génèrent pas de passage texte.
+Les pages visuelles DOCX ne sont pas calculées. Les anciens formats DOC et PPT
+ne sont pas acceptés à cette étape : ils nécessitent LibreOffice pour une
+conversion future.
+
+Un PDF sans texte reçoit le statut `ocr_required` ; l'OCR n'est pas pris en
+charge. Un document vide reçoit `no_text`. Les autres reçoivent
+`pending_indexing` : l'indexation, la recherche RAG et les réponses générées
+ne sont pas encore implémentées. Ce prototype reste local :
 ne l'exposez pas publiquement. Il n'y a pas encore de limitation des tentatives
 de connexion, de récupération des comptes ni de configuration HTTPS. Les
 comptes applicatifs ne protègent pas les fichiers SQLite et PDF contre une
 personne ayant accès au système de fichiers de l'ordinateur.
-La détection OCR indique seulement l'absence de texte dans tout le document :
-elle ne détecte pas les pages scannées au sein d'un document mixte.
+La détection OCR indique seulement l'absence de texte dans tout le PDF : elle ne
+détecte pas les pages scannées au sein d'un PDF mixte.
 En cas d'interruption pendant une suppression, un fichier temporaire se terminant
 par `.deleting` peut nécessiter une vérification manuelle dans `backend/data/uploads/`.
 
 Le découpage limite chaque passage à `CHUNK_SIZE` caractères (1000 par défaut,
 entre 64 et 5000). Il privilégie les fins de phrase puis les espaces, et conserve
-le numéro de page. Les blancs sont normalisés ; le contenu et l'ordre exacts
-peuvent dépendre de l'extraction de PyMuPDF et de la mise en page du PDF.
+le repère propre au format. Les blancs sont normalisés ; la mise en page visuelle
+des fichiers bureautiques n'est pas préservée.
 
 ## Tests
 
@@ -161,3 +172,5 @@ téléchargé.
 - [PyMuPDF](https://pymupdf.readthedocs.io/en/latest/the-basics.html)
 - [FastAPI — mots de passe et sécurité](https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/)
 - [pwdlib — hachage Argon2](https://frankie567.github.io/pwdlib/guide/)
+- [python-docx](https://python-docx.readthedocs.io/en/latest/)
+- [python-pptx](https://python-pptx.readthedocs.io/en/latest/)

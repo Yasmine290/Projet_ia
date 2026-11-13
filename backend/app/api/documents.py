@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Path as RoutePath, Response, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,7 @@ from app.models.course import Course
 from app.models.user import User
 from app.schemas.document import DocumentRead, DocumentSegment
 from app.services.auth import get_current_user
-from app.services.documents import extract_segments, resolve_document_path, store_pdf
+from app.services.documents import extract_segments, resolve_document_path, store_document
 
 router = APIRouter(prefix="/api", tags=["documents"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -35,12 +35,20 @@ def find_document(session: Session, document_id: int, owner_id: int) -> Document
 
 @router.post("/courses/{course_id}/documents", response_model=DocumentRead, status_code=201)
 async def upload_document(
-    course_id: int, file: UploadFile, session: SessionDep, settings: SettingsDep, user: UserDep
+    course_id: Annotated[int, RoutePath(alias="course_id")],
+    file: Annotated[UploadFile, File(alias="file")],
+    session: SessionDep,
+    settings: SettingsDep,
+    user: UserDep,
 ) -> Document:
-    """Stocke un PDF valide puis associe ses métadonnées au cours choisi."""
+    """Stocke un document pris en charge puis associe ses métadonnées au cours."""
     find_course(session, course_id, user.id)
-    name, page_count, processing_status = await store_pdf(
-        file, settings.resolved_upload_dir, settings.max_upload_bytes
+    name, file_format, unit_type, unit_count, processing_status = await store_document(
+        file,
+        settings.resolved_upload_dir,
+        settings.max_upload_bytes,
+        settings.max_archive_entries,
+        settings.max_expanded_bytes,
     )
     # Le nom original sert uniquement à l'affichage, jamais à construire un chemin.
     original_name = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1][:255]
@@ -48,7 +56,9 @@ async def upload_document(
         course_id=course_id,
         original_name=original_name,
         storage_name=name,
-        page_count=page_count,
+        file_format=file_format,
+        unit_type=unit_type,
+        unit_count=unit_count,
         status=processing_status,
     )
     try:
@@ -84,11 +94,17 @@ def read_document(document_id: int, session: SessionDep, user: UserDep) -> Docum
 def read_document_segments(
     document_id: int, session: SessionDep, settings: SettingsDep, user: UserDep
 ) -> list[DocumentSegment]:
-    """Extrait les passages avec leurs pages pour préparer une future indexation."""
+    """Extrait les passages avec leurs repères pour préparer une future indexation."""
     document = find_document(session, document_id, user.id)
     path = resolve_document_path(settings.resolved_upload_dir, document.storage_name)
     return extract_segments(
-        path, document.id, document.course_id, settings.chunk_size
+        path,
+        document.file_format,
+        document.id,
+        document.course_id,
+        settings.chunk_size,
+        settings.max_archive_entries,
+        settings.max_expanded_bytes,
     )
 
 
