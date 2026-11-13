@@ -116,6 +116,15 @@ Ne l'exécutez que si ce transfert est souhaité.
 - `POST /api/documents/{document_id}/index` : indexer explicitement un document.
 - `POST /api/courses/{course_id}/search` : rechercher des passages dans un cours
   (`{"query": "…", "limit": 5}` ; limite de 20 résultats).
+- `POST /api/courses/{course_id}/ask` : poser une question à partir des passages
+  indexés et recevoir une réponse avec ses citations (`limit` de 1 à 5).
+
+Exemple de corps pour `/ask` : `{"query": "Que faut-il retenir ?", "limit": 5}`.
+La génération transmet à l'instance Ollama configurée uniquement la question et
+les passages retrouvés ; les identifiants de citation sont vérifiés et leurs
+marqueurs sont ajoutés ou validés avant le retour. Si aucun passage n'est
+retrouvé, l'API le signale sans appeler le modèle. Le délai maximal est configurable avec
+`OLLAMA_GENERATION_TIMEOUT_SECONDS` (120 secondes par défaut).
 
 Formats actuellement acceptés : PDF, DOCX, PPTX, TXT, DOC et PPT. DOC/PPT sont
 convertis localement par LibreOffice en DOCX/PPTX lors de l'import ; le fichier
@@ -159,8 +168,7 @@ Sentence Transformers utilise par défaut le modèle
 représentent environ 471 Mo et sont téléchargés depuis Hugging Face au premier
 appel d'indexation ou de recherche sur un cours indexé ; le modèle est ensuite
 conservé dans le cache local de Hugging Face. L'API ne télécharge ni ne charge
-le modèle au démarrage. La recherche RAG complète et la génération de réponses
-ne sont pas encore implémentées. Ce prototype reste local :
+le modèle au démarrage. Ce prototype reste local :
 ne l'exposez pas publiquement. Il n'y a pas encore de limitation des tentatives
 de connexion, de récupération des comptes ni de configuration HTTPS. Les
 comptes applicatifs ne protègent pas les fichiers SQLite et PDF contre une

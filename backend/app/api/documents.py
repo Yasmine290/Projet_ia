@@ -2,6 +2,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Path as RoutePath, Response, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,7 @@ from app.db.database import get_session
 from app.models.document import Document
 from app.models.course import Course
 from app.models.user import User
+from app.schemas.answer import AnswerCitation, AnswerRequest, AnswerResponse
 from app.schemas.document import (
     DocumentRead,
     DocumentSearchRequest,
@@ -20,6 +22,7 @@ from app.schemas.document import (
 )
 from app.services.auth import get_current_user
 from app.services.documents import extract_segments, resolve_document_path, store_document
+from app.services.ollama import OllamaService, get_ollama_service
 from app.services.vector_index import (
     VectorIndexError,
     delete_document_segments,
@@ -31,6 +34,7 @@ router = APIRouter(prefix="/api", tags=["documents"])
 SessionDep = Annotated[Session, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 UserDep = Annotated[User, Depends(get_current_user)]
+OllamaDep = Annotated[OllamaService, Depends(get_ollama_service)]
 
 
 def find_document(session: Session, document_id: int, owner_id: int) -> Document:
@@ -173,7 +177,27 @@ def search_course_documents(
     user: UserDep,
 ) -> DocumentSearchResponse:
     """Recherche des passages en limitant la requête au cours du compte connecté."""
-    find_course(session, course_id, user.id)
+    results = _search_course_segments(
+        session,
+        settings,
+        user.id,
+        course_id,
+        request.query,
+        request.limit,
+    )
+    return DocumentSearchResponse(query=request.query, results=results)
+
+
+def _search_course_segments(
+    session: Session,
+    settings: Settings,
+    owner_id: int,
+    course_id: int,
+    query: str,
+    limit: int,
+) -> list[DocumentSearchResult]:
+    """Recherche les passages d'un cours après vérification de son propriétaire."""
+    find_course(session, course_id, owner_id)
     documents = {
         document.id: document
         for document in session.scalars(
@@ -184,14 +208,14 @@ def search_course_documents(
         ).all()
     }
     if not documents:
-        return DocumentSearchResponse(query=request.query, results=[])
+        return []
 
     matches = search_document_segments(
-        request.query,
-        user.id,
+        query,
+        owner_id,
         course_id,
         list(documents),
-        request.limit,
+        limit,
         settings.resolved_chroma_path,
     )
 
@@ -218,7 +242,56 @@ def search_course_documents(
                 distance=match["distance"],
             )
         )
-    return DocumentSearchResponse(query=request.query, results=results)
+    return results
+
+
+@router.post(
+    "/courses/{course_id}/ask",
+    response_model=AnswerResponse,
+)
+async def ask_course(
+    course_id: int,
+    request: AnswerRequest,
+    session: SessionDep,
+    settings: SettingsDep,
+    user: UserDep,
+    ollama: OllamaDep,
+) -> AnswerResponse:
+    """Répond à une question à partir des passages accessibles du cours."""
+    results = await run_in_threadpool(
+        _search_course_segments,
+        session,
+        settings,
+        user.id,
+        course_id,
+        request.query,
+        request.limit,
+    )
+    if not results:
+        return AnswerResponse(
+            query=request.query,
+            answer="Aucun passage pertinent n'a été retrouvé dans les documents indexés du cours.",
+            citations=[],
+        )
+
+    generated = await ollama.generate_answer(request.query, results)
+    sources_by_id = {
+        f"S{index}": source for index, source in enumerate(results, start=1)
+    }
+    citations = [
+        AnswerCitation(
+            citation_id=citation_id,
+            document_name=sources_by_id[citation_id].document_name,
+            file_format=sources_by_id[citation_id].file_format,
+            segment=sources_by_id[citation_id].segment,
+        )
+        for citation_id in generated.citation_ids
+    ]
+    return AnswerResponse(
+        query=request.query,
+        answer=generated.answer,
+        citations=citations,
+    )
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

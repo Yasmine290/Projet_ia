@@ -1,6 +1,9 @@
 import pytest
 
 from app.api import documents as document_api
+from app.main import app
+from app.schemas.answer import GeneratedAnswer
+from app.services.ollama import get_ollama_service
 from app.services.vector_index import VectorIndexError
 from test_data import api
 
@@ -121,6 +124,119 @@ def test_search_skips_model_when_course_has_no_indexed_documents(api, monkeypatc
 
     assert response.status_code == 200
     assert response.json()["results"] == []
+
+
+def test_ask_returns_citations_for_authorized_indexed_sources(api, monkeypatch) -> None:
+    """La réponse et ses citations sont liées aux passages du cours du compte."""
+    client, _, _ = api
+    course_id = client.post("/api/courses", json={"title": "Histoire"}).json()["id"]
+    uploaded = client.post(
+        f"/api/courses/{course_id}/documents",
+        files={"file": ("notes.txt", b"Une lecon importante.", "text/plain")},
+    )
+    document = uploaded.json()
+    calls = {}
+
+    def fake_search(query, owner_id, requested_course, document_ids, limit, chroma_path):
+        calls["search"] = (query, owner_id, requested_course, document_ids, limit)
+        return [
+            {
+                "id": f"{document['id']}:line:1:0",
+                "content": "Une leçon importante.",
+                "metadata": {
+                    "document_id": document["id"],
+                    "location_type": "line",
+                    "location_number": 1,
+                    "position": 0,
+                },
+                "distance": 0.12,
+            }
+        ]
+
+    class FakeOllamaService:
+        async def generate_answer(self, question, sources):
+            calls["generation"] = (question, sources)
+            return GeneratedAnswer(
+                answer="Une leçon importante [S1].",
+                citation_ids=["S1"],
+            )
+
+    monkeypatch.setattr(document_api, "index_document_segments", lambda *args: None)
+    monkeypatch.setattr(document_api, "search_document_segments", fake_search)
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_ollama_service,
+        lambda: FakeOllamaService(),
+    )
+    indexed = client.post(f"/api/documents/{document['id']}/index")
+    assert indexed.status_code == 200, indexed.text
+
+    response = client.post(
+        f"/api/courses/{course_id}/ask",
+        json={"query": "Que faut-il retenir ?", "limit": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls["search"] == ("Que faut-il retenir ?", 1, course_id, [document["id"]], 1)
+    assert calls["generation"][0] == "Que faut-il retenir ?"
+    assert response.json()["answer"] == "Une leçon importante [S1]."
+    assert response.json()["citations"][0]["citation_id"] == "S1"
+    assert response.json()["citations"][0]["document_name"] == "notes.txt"
+    assert response.json()["citations"][0]["segment"]["location_number"] == 1
+
+
+def test_ask_without_relevant_passages_does_not_call_ollama(api, monkeypatch) -> None:
+    """Une recherche vide renvoie un message explicite sans solliciter Ollama."""
+    client, _, _ = api
+    course_id = client.post("/api/courses", json={"title": "Cours en attente"}).json()["id"]
+
+    class FakeOllamaService:
+        async def generate_answer(self, question, sources):
+            pytest.fail("Ollama ne doit pas être appelé sans passage pertinent.")
+
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_ollama_service,
+        lambda: FakeOllamaService(),
+    )
+    response = client.post(
+        f"/api/courses/{course_id}/ask",
+        json={"query": "Une question"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["citations"] == []
+    assert "Aucun passage pertinent" in response.json()["answer"]
+
+
+def test_ask_rejects_another_accounts_course_before_vector_query(api, monkeypatch) -> None:
+    """Un cours d'un autre compte ne déclenche ni recherche ni génération."""
+    client, _, _ = api
+    own_course_id = client.post("/api/courses", json={"title": "Mon cours"}).json()["id"]
+    assert client.post(
+        "/api/auth/register",
+        json={"username": "autre_etudiant", "password": "un-autre-mot-de-passe"},
+    ).status_code == 201
+    other_token = client.post(
+        "/api/auth/login",
+        json={"username": "autre_etudiant", "password": "un-autre-mot-de-passe"},
+    ).json()["access_token"]
+    client.headers["Authorization"] = f"Bearer {other_token}"
+    called = False
+
+    def unexpected_search(*args, **kwargs):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(document_api, "search_document_segments", unexpected_search)
+    response = client.post(
+        f"/api/courses/{own_course_id}/ask",
+        json={"query": "cours privé"},
+    )
+
+    assert response.status_code == 404
+    assert not called
 
 
 def test_failed_reindex_keeps_document_pending(api, monkeypatch) -> None:
