@@ -42,6 +42,11 @@ class Settings(BaseSettings):
         """Les chemins relatifs restent identiques quel que soit le répertoire courant."""
         return (BACKEND_DIR / self.upload_dir).resolve()
 
+    @property
+    def resolved_chroma_path(self) -> Path:
+        """Range l'index local au même endroit quel que soit le répertoire courant."""
+        return (BACKEND_DIR / self.chroma_path).resolve()
+
 
 @lru_cache
 def get_settings() -> Settings:

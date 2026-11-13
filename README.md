@@ -112,8 +112,10 @@ Ne l'exécutez que si ce transfert est souhaité.
 - `POST`, `GET /api/courses/{course_id}/documents` : importer ou lister les documents.
 - `GET`, `DELETE /api/documents/{document_id}` : consulter ou supprimer un document.
 - `GET /api/documents/{document_id}/segments` : extraire le texte et le découper
-  en passages avec leurs références. Ce calcul ne stocke ni
-  n'indexe les passages ; il est effectué à chaque appel.
+  en passages avec leurs références.
+- `POST /api/documents/{document_id}/index` : indexer explicitement un document.
+- `POST /api/courses/{course_id}/search` : rechercher des passages dans un cours
+  (`{"query": "…", "limit": 5}` ; limite de 20 résultats).
 
 Formats actuellement acceptés : PDF, DOCX, PPTX, TXT, DOC et PPT. DOC/PPT sont
 convertis localement par LibreOffice en DOCX/PPTX lors de l'import ; le fichier
@@ -140,12 +142,24 @@ Les repères d'extraction sont les pages PDF, toutes les diapositives PPTX, les
 blocs (paragraphes et tableaux) DOCX, et les lignes TXT. `unit_count` donne le
 nombre de repères du format ; les unités vides ne génèrent pas de passage texte.
 Les pages visuelles DOCX ne sont pas calculées. Les anciens formats DOC et PPT
-ne sont pas acceptés à cette étape : ils nécessitent LibreOffice pour une
-conversion future.
+passent par LibreOffice à l'import et gardent leurs références de paragraphe ou
+de diapositive après conversion.
 
 Un PDF sans texte reçoit le statut `ocr_required` ; l'OCR n'est pas pris en
 charge. Un document vide reçoit `no_text`. Les autres reçoivent
-`pending_indexing` : l'indexation, la recherche RAG et les réponses générées
+`pending_indexing` jusqu'à l'appel explicite à la route d'indexation. Les vecteurs
+sont conservés localement dans `backend/data/chroma/`, et les passages gardent
+leurs repères de page, ligne, paragraphe ou diapositive. L'index et chaque
+recherche sont filtrés par compte et par cours ; la suppression d'un document
+supprime aussi ses vecteurs. Si Chroma ne peut pas les supprimer, l'API conserve
+le document en attente d'indexation plutôt que de laisser un index visible.
+
+Sentence Transformers utilise par défaut le modèle
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. Ses poids
+représentent environ 471 Mo et sont téléchargés depuis Hugging Face au premier
+appel d'indexation ou de recherche sur un cours indexé ; le modèle est ensuite
+conservé dans le cache local de Hugging Face. L'API ne télécharge ni ne charge
+le modèle au démarrage. La recherche RAG complète et la génération de réponses
 ne sont pas encore implémentées. Ce prototype reste local :
 ne l'exposez pas publiquement. Il n'y a pas encore de limitation des tentatives
 de connexion, de récupération des comptes ni de configuration HTTPS. Les
@@ -191,3 +205,6 @@ téléchargé.
 - [pwdlib — hachage Argon2](https://frankie567.github.io/pwdlib/guide/)
 - [python-docx](https://python-docx.readthedocs.io/en/latest/)
 - [python-pptx](https://python-pptx.readthedocs.io/en/latest/)
+- [Sentence Transformers](https://www.sbert.net/)
+- [ChromaDB — client persistant](https://docs.trychroma.com/docs/run-chroma/clients)
+- [Modèle multilingue d'embeddings utilisé](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2)

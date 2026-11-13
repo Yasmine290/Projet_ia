@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api import documents as document_api
 from app.core.config import BACKEND_DIR, get_settings
 from app.db.database import get_engine
 from app.main import app
@@ -20,7 +21,10 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     database_path = tmp_path / "test.sqlite"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("CHROMA_PATH", str(tmp_path / "chroma"))
     monkeypatch.setenv("MAX_UPLOAD_BYTES", "100000")
+    # L'API est isolée de Chroma ; le service vectoriel est testé séparément.
+    monkeypatch.setattr(document_api, "delete_document_segments", lambda *args: None)
     get_settings.cache_clear()
     get_engine.cache_clear()
     config = Config(str(BACKEND_DIR / "alembic.ini"))
@@ -114,16 +118,25 @@ def test_failed_delete_restores_pdf(api, monkeypatch: pytest.MonkeyPatch) -> Non
     document_id = response.json()["id"]
     original_path = next((tmp_path / "uploads").iterdir())
 
-    def fail_commit(self: Session) -> None:
-        raise RuntimeError("Échec simulé de la transaction")
+    original_commit = Session.commit
+    commit_count = 0
+
+    def fail_delete_commit(self: Session) -> None:
+        nonlocal commit_count
+        commit_count += 1
+        if commit_count == 2:
+            raise RuntimeError("Échec simulé de la transaction")
+        original_commit(self)
 
     with monkeypatch.context() as patch:
-        patch.setattr(Session, "commit", fail_commit)
+        patch.setattr(Session, "commit", fail_delete_commit)
         with pytest.raises(RuntimeError, match="Échec simulé"):
             client.delete(f"/api/documents/{document_id}")
 
     assert original_path.exists()
-    assert client.get(f"/api/documents/{document_id}").status_code == 200
+    response = client.get(f"/api/documents/{document_id}")
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending_indexing"
 
 
 def test_extract_document_segments_with_page_references(api) -> None:

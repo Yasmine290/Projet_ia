@@ -11,9 +11,21 @@ from app.db.database import get_session
 from app.models.document import Document
 from app.models.course import Course
 from app.models.user import User
-from app.schemas.document import DocumentRead, DocumentSegment
+from app.schemas.document import (
+    DocumentRead,
+    DocumentSearchRequest,
+    DocumentSearchResponse,
+    DocumentSearchResult,
+    DocumentSegment,
+)
 from app.services.auth import get_current_user
 from app.services.documents import extract_segments, resolve_document_path, store_document
+from app.services.vector_index import (
+    VectorIndexError,
+    delete_document_segments,
+    index_document_segments,
+    search_document_segments,
+)
 
 router = APIRouter(prefix="/api", tags=["documents"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -96,7 +108,7 @@ def read_document(document_id: int, session: SessionDep, user: UserDep) -> Docum
 def read_document_segments(
     document_id: int, session: SessionDep, settings: SettingsDep, user: UserDep
 ) -> list[DocumentSegment]:
-    """Extrait les passages avec leurs repères pour préparer une future indexation."""
+    """Extrait les passages avec leurs repères sans modifier l'index."""
     document = find_document(session, document_id, user.id)
     path = resolve_document_path(settings.resolved_upload_dir, document.storage_name)
     return extract_segments(
@@ -110,12 +122,134 @@ def read_document_segments(
     )
 
 
-@router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(document_id: int, session: SessionDep, settings: SettingsDep, user: UserDep) -> Response:
-    """Supprime un document et son fichier avec restauration en cas d'échec SQLite."""
+@router.post("/documents/{document_id}/index", response_model=DocumentRead)
+def index_document(
+    document_id: int, session: SessionDep, settings: SettingsDep, user: UserDep
+) -> Document:
+    """Extrait et indexe explicitement un document avec ses repères de source."""
     document = find_document(session, document_id, user.id)
     path = resolve_document_path(settings.resolved_upload_dir, document.storage_name)
+    segments = extract_segments(
+        path,
+        document.file_format,
+        document.id,
+        document.course_id,
+        settings.chunk_size,
+        settings.max_archive_entries,
+        settings.max_expanded_bytes,
+    )
+    # Un nouvel essai ne doit pas exposer un index partiellement rafraîchi.
+    document.status = "pending_indexing"
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    index_document_segments(
+        segments,
+        user.id,
+        document.file_format,
+        settings.resolved_chroma_path,
+    )
+    document.status = "indexed"
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    session.refresh(document)
+    return document
+
+
+@router.post(
+    "/courses/{course_id}/search",
+    response_model=DocumentSearchResponse,
+)
+def search_course_documents(
+    course_id: int,
+    request: DocumentSearchRequest,
+    session: SessionDep,
+    settings: SettingsDep,
+    user: UserDep,
+) -> DocumentSearchResponse:
+    """Recherche des passages en limitant la requête au cours du compte connecté."""
+    find_course(session, course_id, user.id)
+    documents = {
+        document.id: document
+        for document in session.scalars(
+            select(Document).where(
+                Document.course_id == course_id,
+                Document.status == "indexed",
+            )
+        ).all()
+    }
+    if not documents:
+        return DocumentSearchResponse(query=request.query, results=[])
+
+    matches = search_document_segments(
+        request.query,
+        user.id,
+        course_id,
+        list(documents),
+        request.limit,
+        settings.resolved_chroma_path,
+    )
+
+    results: list[DocumentSearchResult] = []
+    for match in matches:
+        metadata = match["metadata"]
+        document = documents.get(metadata["document_id"])
+        if document is None:
+            # Un index résiduel après une suppression ne doit jamais être renvoyé.
+            continue
+        results.append(
+            DocumentSearchResult(
+                segment=DocumentSegment(
+                    id=match["id"],
+                    document_id=document.id,
+                    course_id=course_id,
+                    location_type=metadata["location_type"],
+                    location_number=metadata["location_number"],
+                    position=metadata["position"],
+                    content=match["content"],
+                ),
+                document_name=document.original_name,
+                file_format=document.file_format,
+                distance=match["distance"],
+            )
+        )
+    return DocumentSearchResponse(query=request.query, results=results)
+
+
+@router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_document(document_id: int, session: SessionDep, settings: SettingsDep, user: UserDep) -> Response:
+    """Supprime l'index, le document et son fichier avec gestion des échecs."""
+    document = find_document(session, document_id, user.id)
+    path = resolve_document_path(settings.resolved_upload_dir, document.storage_name)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=500, detail="Impossible de déplacer le fichier du document pour suppression."
+        )
     temporary_path = path.with_name(f"{path.name}.{uuid4().hex}.deleting")
+
+    # Les recherches ignorent le document pendant le nettoyage de son index.
+    document.status = "pending_indexing"
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    try:
+        delete_document_segments(document.id, user.id, settings.resolved_chroma_path)
+    except VectorIndexError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Document conservé en attente : impossible de supprimer son index local. "
+                "Il reste masqué des recherches et peut être réindexé."
+            ),
+        ) from exc
+
     try:
         # Conserver le fichier jusqu'à la confirmation de la transaction SQLite.
         path.rename(temporary_path)
