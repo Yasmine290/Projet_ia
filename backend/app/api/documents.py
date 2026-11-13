@@ -9,17 +9,25 @@ from app.api.courses import find_course
 from app.core.config import Settings, get_settings
 from app.db.database import get_session
 from app.models.document import Document
+from app.models.course import Course
+from app.models.user import User
 from app.schemas.document import DocumentRead, DocumentSegment
+from app.services.auth import get_current_user
 from app.services.documents import extract_segments, resolve_document_path, store_pdf
 
 router = APIRouter(prefix="/api", tags=["documents"])
 SessionDep = Annotated[Session, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+UserDep = Annotated[User, Depends(get_current_user)]
 
 
-def find_document(session: Session, document_id: int) -> Document:
-    """Recherche les métadonnées d'un document ou renvoie une erreur 404."""
-    document = session.get(Document, document_id)
+def find_document(session: Session, document_id: int, owner_id: int) -> Document:
+    """Un document n'est accessible qu'au propriétaire de son cours."""
+    document = session.scalar(
+        select(Document).join(Course).where(
+            Document.id == document_id, Course.owner_id == owner_id
+        )
+    )
     if document is None:
         raise HTTPException(status_code=404, detail="Document introuvable.")
     return document
@@ -27,10 +35,10 @@ def find_document(session: Session, document_id: int) -> Document:
 
 @router.post("/courses/{course_id}/documents", response_model=DocumentRead, status_code=201)
 async def upload_document(
-    course_id: int, file: UploadFile, session: SessionDep, settings: SettingsDep
+    course_id: int, file: UploadFile, session: SessionDep, settings: SettingsDep, user: UserDep
 ) -> Document:
     """Stocke un PDF valide puis associe ses métadonnées au cours choisi."""
-    find_course(session, course_id)
+    find_course(session, course_id, user.id)
     name, page_count, processing_status = await store_pdf(
         file, settings.resolved_upload_dir, settings.max_upload_bytes
     )
@@ -56,9 +64,9 @@ async def upload_document(
 
 
 @router.get("/courses/{course_id}/documents", response_model=list[DocumentRead])
-def list_documents(course_id: int, session: SessionDep) -> list[Document]:
+def list_documents(course_id: int, session: SessionDep, user: UserDep) -> list[Document]:
     """Retourne les documents associés à un cours existant."""
-    find_course(session, course_id)
+    find_course(session, course_id, user.id)
     return list(
         session.scalars(
             select(Document).where(Document.course_id == course_id).order_by(Document.id)
@@ -67,17 +75,17 @@ def list_documents(course_id: int, session: SessionDep) -> list[Document]:
 
 
 @router.get("/documents/{document_id}", response_model=DocumentRead)
-def read_document(document_id: int, session: SessionDep) -> Document:
+def read_document(document_id: int, session: SessionDep, user: UserDep) -> Document:
     """Retourne les métadonnées publiques et l'état d'un document."""
-    return find_document(session, document_id)
+    return find_document(session, document_id, user.id)
 
 
 @router.get("/documents/{document_id}/segments", response_model=list[DocumentSegment])
 def read_document_segments(
-    document_id: int, session: SessionDep, settings: SettingsDep
+    document_id: int, session: SessionDep, settings: SettingsDep, user: UserDep
 ) -> list[DocumentSegment]:
     """Extrait les passages avec leurs pages pour préparer une future indexation."""
-    document = find_document(session, document_id)
+    document = find_document(session, document_id, user.id)
     path = resolve_document_path(settings.resolved_upload_dir, document.storage_name)
     return extract_segments(
         path, document.id, document.course_id, settings.chunk_size
@@ -85,9 +93,9 @@ def read_document_segments(
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(document_id: int, session: SessionDep, settings: SettingsDep) -> Response:
+def delete_document(document_id: int, session: SessionDep, settings: SettingsDep, user: UserDep) -> Response:
     """Supprime un document et son fichier avec restauration en cas d'échec SQLite."""
-    document = find_document(session, document_id)
+    document = find_document(session, document_id, user.id)
     path = resolve_document_path(settings.resolved_upload_dir, document.storage_name)
     temporary_path = path.with_name(f"{path.name}.{uuid4().hex}.deleting")
     try:

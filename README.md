@@ -10,6 +10,7 @@ Le dossier local ne contenait pas encore de fichiers de projet ni de maquette
 lors de l'audit initial. La phase 1 met en place l'API FastAPI et son contrôle
 de disponibilité d'Ollama. Le frontend sera intégré lorsque sa maquette sera
 disponible. La phase 2 ajoute SQLite, les cours et l'importation des PDF.
+Des comptes locaux protègent désormais les cours et documents par utilisateur.
 
 ## Prérequis
 
@@ -65,7 +66,42 @@ La configuration locale se trouve dans `backend/.env`. Les valeurs par défaut
 fonctionnent avec Ollama à `http://localhost:11434` et le modèle `qwen3:4b`.
 Ne commitez pas le fichier `.env`.
 
-## API initiale
+## Comptes locaux et API
+
+La connexion utilise des comptes locaux, des mots de passe hachés avec Argon2
+et des jetons de session aléatoires valables 12 heures. Chaque compte ne peut
+accéder qu'à ses propres cours et documents.
+
+Depuis `http://127.0.0.1:8001/docs` :
+
+1. Utiliser `POST /api/auth/register` avec un nom d'utilisateur de 3 à 50
+   caractères (`a-z`, chiffres, `_`, `-`, `.`) et un mot de passe de 12 à 128
+   caractères.
+2. Utiliser `POST /api/auth/login` avec les mêmes identifiants.
+3. Copier le `access_token` retourné dans **Authorize** pour appeler les routes
+   protégées. Ne partagez pas ce jeton.
+4. Utiliser `POST /api/auth/logout` pour révoquer la session.
+
+`GET /api/auth/me` affiche le compte associé au jeton. L'interface React et les
+fonctions de changement ou récupération du mot de passe ne sont pas encore
+implémentées.
+
+### Anciens cours sans compte
+
+La migration conserve les cours créés avant l'authentification mais ne les
+attribue pas automatiquement : ils restent invisibles jusqu'à une attribution
+manuelle. Après avoir sauvegardé la base locale, créé le compte voulu et vérifié
+son nom, exécuter depuis le dossier `backend` avec l'environnement virtuel actif :
+
+```text
+python -m app.claim_courses nom_du_compte --confirm
+```
+
+Cette opération attribue **tous** les anciens cours sans propriétaire, ainsi que
+leurs documents, au compte indiqué ; elle ne modifie pas les cours déjà attribués.
+Ne l'exécutez que si ce transfert est souhaité.
+
+### Routes
 
 - `GET /api/health` : vérifie que l'API répond.
 - `GET /api/ollama/status` : vérifie la connexion à Ollama et la présence du
@@ -82,8 +118,11 @@ Ne commitez pas le fichier `.env`.
 Les PDF sont limités à 10 Mio par défaut (`MAX_UPLOAD_BYTES`). Un fichier sans
 texte reçoit le statut `ocr_required` ; l'OCR n'est pas pris en charge.
 Les autres reçoivent `pending_indexing` : l'indexation, la recherche RAG et les
-réponses générées ne sont pas encore implémentées. Ce prototype est local et
-ne propose ni comptes ni authentification ; ne l'exposez pas publiquement.
+réponses générées ne sont pas encore implémentées. Ce prototype reste local :
+ne l'exposez pas publiquement. Il n'y a pas encore de limitation des tentatives
+de connexion, de récupération des comptes ni de configuration HTTPS. Les
+comptes applicatifs ne protègent pas les fichiers SQLite et PDF contre une
+personne ayant accès au système de fichiers de l'ordinateur.
 La détection OCR indique seulement l'absence de texte dans tout le document :
 elle ne détecte pas les pages scannées au sein d'un document mixte.
 En cas d'interruption pendant une suppression, un fichier temporaire se terminant
@@ -120,3 +159,5 @@ téléchargé.
 - [Alembic — migrations](https://alembic.sqlalchemy.org/en/latest/tutorial.html)
 - [FastAPI — fichiers](https://fastapi.tiangolo.com/tutorial/request-files/)
 - [PyMuPDF](https://pymupdf.readthedocs.io/en/latest/the-basics.html)
+- [FastAPI — mots de passe et sécurité](https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/)
+- [pwdlib — hachage Argon2](https://frankie567.github.io/pwdlib/guide/)

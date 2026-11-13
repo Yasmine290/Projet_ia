@@ -7,24 +7,29 @@ from sqlalchemy.orm import Session
 from app.db.database import get_session
 from app.models.course import Course
 from app.models.document import Document
+from app.models.user import User
 from app.schemas.course import CourseCreate, CourseRead, CourseUpdate
+from app.services.auth import get_current_user
 
 router = APIRouter(prefix="/api/courses", tags=["courses"])
 SessionDep = Annotated[Session, Depends(get_session)]
+UserDep = Annotated[User, Depends(get_current_user)]
 
 
-def find_course(session: Session, course_id: int) -> Course:
-    """Recherche un cours ou renvoie une erreur HTTP si son identifiant est inconnu."""
-    course = session.get(Course, course_id)
+def find_course(session: Session, course_id: int, owner_id: int) -> Course:
+    """Un cours d'un autre compte est traité comme inexistant."""
+    course = session.scalar(
+        select(Course).where(Course.id == course_id, Course.owner_id == owner_id)
+    )
     if course is None:
         raise HTTPException(status_code=404, detail="Cours introuvable.")
     return course
 
 
 @router.post("", response_model=CourseRead, status_code=status.HTTP_201_CREATED)
-def create_course(data: CourseCreate, session: SessionDep) -> Course:
+def create_course(data: CourseCreate, session: SessionDep, user: UserDep) -> Course:
     """Enregistre le cours validé et retourne ses données persistées."""
-    course = Course(title=data.title, description=data.description)
+    course = Course(title=data.title, description=data.description, owner_id=user.id)
     session.add(course)
     session.commit()
     session.refresh(course)
@@ -32,21 +37,23 @@ def create_course(data: CourseCreate, session: SessionDep) -> Course:
 
 
 @router.get("", response_model=list[CourseRead])
-def list_courses(session: SessionDep) -> list[Course]:
+def list_courses(session: SessionDep, user: UserDep) -> list[Course]:
     """Retourne les cours dans leur ordre de création."""
-    return list(session.scalars(select(Course).order_by(Course.id)).all())
+    return list(session.scalars(
+        select(Course).where(Course.owner_id == user.id).order_by(Course.id)
+    ).all())
 
 
 @router.get("/{course_id}", response_model=CourseRead)
-def read_course(course_id: int, session: SessionDep) -> Course:
+def read_course(course_id: int, session: SessionDep, user: UserDep) -> Course:
     """Retourne les détails d'un cours existant."""
-    return find_course(session, course_id)
+    return find_course(session, course_id, user.id)
 
 
 @router.patch("/{course_id}", response_model=CourseRead)
-def update_course(course_id: int, data: CourseUpdate, session: SessionDep) -> Course:
+def update_course(course_id: int, data: CourseUpdate, session: SessionDep, user: UserDep) -> Course:
     """Modifie uniquement les champs transmis, sans accepter de valeur nulle."""
-    course = find_course(session, course_id)
+    course = find_course(session, course_id, user.id)
     changes = data.model_dump(exclude_unset=True)
     if any(value is None for value in changes.values()):
         raise HTTPException(status_code=422, detail="Les champs ne peuvent pas être nuls.")
@@ -58,9 +65,9 @@ def update_course(course_id: int, data: CourseUpdate, session: SessionDep) -> Co
 
 
 @router.delete("/{course_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_course(course_id: int, session: SessionDep) -> Response:
+def delete_course(course_id: int, session: SessionDep, user: UserDep) -> Response:
     """Supprime un cours uniquement après la suppression de ses documents."""
-    course = find_course(session, course_id)
+    course = find_course(session, course_id, user.id)
     # Empêche de laisser des fichiers orphelins : supprimer les documents d'abord.
     if session.scalar(select(Document.id).where(Document.course_id == course_id).limit(1)):
         raise HTTPException(

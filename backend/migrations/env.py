@@ -1,7 +1,7 @@
 from alembic import context
 
 from app.db.database import get_engine
-from app.models import Course, Document
+from app.models import Course, Document, LoginSession, User
 from app.models.base import Base
 
 target_metadata = Base.metadata

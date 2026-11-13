@@ -27,6 +27,11 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     command.upgrade(config, "head")
     engine = get_engine()
     with TestClient(app) as client:
+        # Les tests existants exercent les routes en tant que propriétaire connecté.
+        credentials = {"username": "etudiant", "password": "mot-de-passe-test"}
+        assert client.post("/api/auth/register", json=credentials).status_code == 201
+        token = client.post("/api/auth/login", json=credentials).json()["access_token"]
+        client.headers["Authorization"] = f"Bearer {token}"
         yield client, tmp_path, engine
     engine.dispose()
     get_engine.cache_clear()
