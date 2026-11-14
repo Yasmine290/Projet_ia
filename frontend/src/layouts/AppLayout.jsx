@@ -22,7 +22,7 @@ const navigation = [
   { to: "/", label: "Tableau de bord", icon: LayoutDashboard },
   { to: "/cours", label: "Mes cours", icon: BookOpen },
   { to: "/documents", label: "Documents", icon: FileText },
-  { to: "/resumes", label: "Résumés et fiches", icon: NotebookPen, comingSoon: true },
+  { to: "/resumes", label: "Résumés et fiches", icon: NotebookPen },
   { to: "/quiz", label: "Quiz", icon: Target, comingSoon: true },
   { to: "/assistant", label: "Assistant intelligent", icon: Bot },
   { to: "/progression", label: "Ma progression", icon: BarChart3, comingSoon: true },

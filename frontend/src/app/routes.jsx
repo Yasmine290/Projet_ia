@@ -4,6 +4,7 @@ import DashboardPage from "../pages/DashboardPage";
 import CoursesPage from "../pages/CoursesPage";
 import DocumentsPage from "../pages/DocumentsPage";
 import AssistantPage from "../pages/AssistantPage";
+import SummariesPage from "../pages/SummariesPage";
 import ComingSoonPage from "../pages/ComingSoonPage";
 import NotFoundPage from "../pages/NotFoundPage";
 import SettingsPage from "../pages/SettingsPage";
@@ -28,9 +29,9 @@ export const router = createBrowserRouter([
           { path: "cours", Component: CoursesPage },
           { path: "documents", Component: DocumentsPage },
           { path: "assistant", Component: AssistantPage },
+          { path: "resumes", Component: SummariesPage },
           { path: "parametres", Component: SettingsPage },
           // Ces espaces restent accessibles, mais sans contenu fictif tant que l'API n'existe pas.
-          { path: "resumes", Component: ComingSoonPage },
           { path: "quiz", Component: ComingSoonPage },
           { path: "progression", Component: ComingSoonPage },
           { path: "revisions", Component: ComingSoonPage },

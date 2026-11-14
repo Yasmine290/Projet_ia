@@ -5,6 +5,11 @@ import pytest
 from app.api import documents as document_api
 from app.main import app
 from app.schemas.answer import GeneratedAnswer
+from app.schemas.study_guide import (
+    GeneratedStudyGuide,
+    StudyGuideFlashcard,
+    StudyGuideSection,
+)
 from app.services.ollama import (
     AnswerStreamComplete,
     AnswerStreamDelta,
@@ -262,6 +267,100 @@ def test_streaming_ask_returns_deltas_and_verified_citations(api, monkeypatch) -
     completed = next(event["response"] for event in events if event["type"] == "complete")
     assert completed["answer"] == "Une leçon importante [S1]."
     assert completed["citations"][0]["citation_id"] == "S1"
+
+
+def test_study_guide_uses_only_the_selected_indexed_document(api, monkeypatch) -> None:
+    """La génération cible un document du compte et renvoie ses sources vérifiées."""
+    client, _, _ = api
+    course_id = client.post("/api/courses", json={"title": "Biologie"}).json()["id"]
+    uploaded = client.post(
+        f"/api/courses/{course_id}/documents",
+        files={"file": ("biologie.txt", b"Photosynthesis produces oxygen.", "text/plain")},
+    )
+    document = uploaded.json()
+    calls = {}
+
+    def fake_search(query, owner_id, requested_course, document_ids, limit, chroma_path):
+        calls["search"] = (query, owner_id, requested_course, document_ids, limit)
+        return [
+            {
+                "id": f"{document['id']}:line:1:0",
+                "content": "La photosynthèse produit de l'oxygène.",
+                "metadata": {
+                    "document_id": document["id"],
+                    "location_type": "line",
+                    "location_number": 1,
+                    "position": 0,
+                },
+                "distance": 0.12,
+            }
+        ]
+
+    class FakeOllamaService:
+        async def generate_study_guide(self, kind, sources):
+            calls["generation"] = (kind, sources)
+            return GeneratedStudyGuide(
+                title="Photosynthèse",
+                intro="La photosynthèse produit de l'oxygène.",
+                sections=[StudyGuideSection(title="Bilan", text="L'oxygène est libéré.")],
+                flashcards=[
+                    StudyGuideFlashcard(question=f"Question {index} ?", answer="Réponse.")
+                    for index in range(1, 4)
+                ],
+                citation_ids=["S1"],
+            )
+
+    monkeypatch.setattr(document_api, "index_document_segments", lambda *args: None)
+    monkeypatch.setattr(document_api, "search_document_segments", fake_search)
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_ollama_service,
+        lambda: FakeOllamaService(),
+    )
+    indexed = client.post(f"/api/documents/{document['id']}/index")
+    assert indexed.status_code == 200, indexed.text
+
+    response = client.post(
+        f"/api/documents/{document['id']}/study-guide",
+        json={"kind": "sheet"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls["search"] == (
+        document_api.STUDY_GUIDE_SEARCH_QUERY,
+        1,
+        course_id,
+        [document["id"]],
+        document_api.STUDY_GUIDE_SOURCE_LIMIT,
+    )
+    assert calls["generation"][0] == "sheet"
+    assert response.json()["title"] == "Photosynthèse"
+    assert len(response.json()["flashcards"]) == 3
+    assert response.json()["citations"][0]["document_name"] == "biologie.txt"
+    assert response.json()["citations"][0]["segment"]["location_number"] == 1
+
+
+def test_study_guide_rejects_a_document_that_is_not_indexed(api, monkeypatch) -> None:
+    """Le service ne génère pas de support pour un document encore en attente."""
+    client, _, _ = api
+    course_id = client.post("/api/courses", json={"title": "Cours"}).json()["id"]
+    uploaded = client.post(
+        f"/api/courses/{course_id}/documents",
+        files={"file": ("notes.txt", b"Texte non indexe.", "text/plain")},
+    )
+    document_id = uploaded.json()["id"]
+
+    def unexpected_search(*args, **kwargs):
+        pytest.fail("La génération ne doit pas rechercher un document non indexé.")
+
+    monkeypatch.setattr(document_api, "search_document_segments", unexpected_search)
+    response = client.post(
+        f"/api/documents/{document_id}/study-guide",
+        json={"kind": "short"},
+    )
+
+    assert response.status_code == 409
+    assert "Indexez ce document" in response.json()["detail"]
 
 
 def test_ask_without_relevant_passages_does_not_call_ollama(api, monkeypatch) -> None:

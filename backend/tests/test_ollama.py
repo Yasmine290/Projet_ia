@@ -215,6 +215,130 @@ def test_generate_answer_stream_decodes_json_answer_fragments() -> None:
     assert requests[0]["stream"] is True
 
 
+@pytest.mark.parametrize(
+    ("kind", "section_count", "card_count", "prompt_text"),
+    [
+        ("short", 2, 0, "Crée un résumé court"),
+        ("detailed", 3, 0, "Crée un résumé détaillé"),
+        ("sheet", 2, 3, "Crée une fiche de révision"),
+    ],
+)
+def test_generate_study_guide_returns_validated_content(
+    kind, section_count, card_count, prompt_text
+) -> None:
+    """Les trois formats respectent leur structure et citent les sources reçues."""
+    requests = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "title": "Les bases de la photosynthèse",
+                            "intro": "La photosynthèse convertit l'énergie lumineuse.",
+                            "sections": [
+                                {
+                                    "title": f"Notion {index}",
+                                    "text": "La photosynthèse produit du glucose.",
+                                }
+                                for index in range(section_count)
+                            ],
+                            "flashcards": [
+                                {
+                                    "question": f"Question {index} ?",
+                                    "answer": "Réponse fondée sur la source.",
+                                }
+                                for index in range(card_count)
+                            ],
+                            "citation_ids": ["S1"],
+                        },
+                        ensure_ascii=False,
+                    )
+                }
+            },
+        )
+
+    service = OllamaService(
+        base_url="http://ollama.test",
+        model_name="qwen3:4b",
+        transport=httpx.MockTransport(respond),
+    )
+    source = DocumentSearchResult(
+        segment=DocumentSegment(
+            id="1:page:2:0",
+            document_id=1,
+            course_id=2,
+            location_type="page",
+            location_number=2,
+            position=0,
+            content="La photosynthèse produit du glucose et libère de l'oxygène.",
+        ),
+        document_name="biologie.pdf",
+        file_format="pdf",
+        distance=0.1,
+    )
+
+    result = asyncio.run(service.generate_study_guide(kind, [source]))
+
+    assert result.title == "Les bases de la photosynthèse"
+    assert len(result.sections) == section_count
+    assert len(result.flashcards) == card_count
+    assert result.citation_ids == ["S1"]
+    assert requests[0]["stream"] is False
+    assert requests[0]["format"]["properties"]["flashcards"]["maxItems"] == (
+        5 if kind == "sheet" else 0
+    )
+    assert prompt_text in requests[0]["messages"][1]["content"]
+
+
+def test_generate_study_guide_rejects_unknown_citation_ids() -> None:
+    """Une référence absente des passages reçus ne doit pas être acceptée."""
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "title": "Résumé",
+                            "intro": "Introduction.",
+                            "sections": [],
+                            "flashcards": [],
+                            "citation_ids": ["S2"],
+                        }
+                    )
+                }
+            },
+        )
+
+    service = OllamaService(
+        base_url="http://ollama.test",
+        model_name="qwen3:4b",
+        transport=httpx.MockTransport(respond),
+    )
+    source = DocumentSearchResult(
+        segment=DocumentSegment(
+            id="1:line:1:0",
+            document_id=1,
+            course_id=2,
+            location_type="line",
+            location_number=1,
+            position=0,
+            content="Texte source.",
+        ),
+        document_name="notes.txt",
+        file_format="txt",
+        distance=0.1,
+    )
+
+    with pytest.raises(HTTPException, match="références de source invalides"):
+        asyncio.run(service.generate_study_guide("short", [source]))
+
+
 def test_generate_answer_rejects_citations_not_in_retrieved_sources() -> None:
     """Une réponse qui invente une référence est refusée avant d'être renvoyée."""
     def respond(request: httpx.Request) -> httpx.Response:

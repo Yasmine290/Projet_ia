@@ -3,10 +3,6 @@ import { Link, useLocation } from "react-router";
 import { Button, Card, PageHeader } from "../components/ui";
 
 const upcomingFeatures = {
-  "/resumes": {
-    title: "Résumés et fiches",
-    description: "La génération de résumés à partir de documents n'est pas encore disponible.",
-  },
   "/quiz": {
     title: "Quiz",
     description: "La création et l'enregistrement de quiz nécessitent encore un service backend.",

@@ -9,10 +9,11 @@ les données réelles de l'API plutôt que les contenus fictifs de la démonstra
 ## État du projet
 
 Le backend FastAPI gère l'authentification, les cours, les documents multi-formats,
-l'indexation vectorielle et les réponses RAG avec citations. Le frontend React
-intègre les parcours de connexion, cours, documents et assistant. Les quiz,
-résumés, progression et révisions restent indisponibles jusqu'à l'ajout de leurs
-services backend.
+l'indexation vectorielle, les réponses RAG avec citations et la génération de
+résumés et de fiches de révision. Le frontend React intègre les parcours de
+connexion, cours, documents, assistant et supports de révision. Les quiz, la
+progression et les révisions personnalisées restent indisponibles jusqu'à l'ajout
+de leurs services backend.
 
 ## Prérequis
 
@@ -140,6 +141,8 @@ Ne l'exécutez que si ce transfert est souhaité.
   indexés et recevoir une réponse avec ses citations (`limit` de 1 à 5).
 - `POST /api/courses/{course_id}/ask/stream` : même génération, diffusée
   progressivement au format Server-Sent Events.
+- `POST /api/documents/{document_id}/study-guide` : générer un résumé ou une fiche
+  à partir des passages indexés d'un document (`kind` : `short`, `detailed` ou `sheet`).
 
 Exemple de corps pour `/ask` : `{"query": "Que faut-il retenir ?", "limit": 5}`.
 La génération transmet à l'instance Ollama configurée uniquement la question et
@@ -150,6 +153,10 @@ retrouvé, l'API le signale sans appeler le modèle. Le délai maximal est confi
 Le flux `/ask/stream` envoie des événements `delta`, puis `complete` avec la même
 réponse et les citations vérifiées ; le temps total de génération dépend toujours
 d'Ollama.
+Pour `/study-guide`, le corps est `{"kind": "short"}`. Les modes `short` et
+`detailed` créent un résumé ; le mode `sheet` ajoute des cartes question-réponse.
+Les supports sont générés à la demande à partir des passages les plus pertinents
+du document indexé et retournent les sources utilisées.
 
 Formats actuellement acceptés : PDF, DOCX, PPTX, TXT, DOC et PPT. DOC/PPT sont
 convertis localement par LibreOffice en DOCX/PPTX lors de l'import ; le fichier

@@ -23,6 +23,11 @@ from app.schemas.document import (
     DocumentSearchResult,
     DocumentSegment,
 )
+from app.schemas.study_guide import (
+    GeneratedStudyGuide,
+    StudyGuideRequest,
+    StudyGuideResponse,
+)
 from app.services.auth import get_current_user
 from app.services.documents import extract_segments, resolve_document_path, store_document
 from app.services.ollama import (
@@ -56,6 +61,8 @@ SUMMARY_QUERY_INTENTS = (
     "sujets abordes",
     "vue d'ensemble",
 )
+STUDY_GUIDE_SOURCE_LIMIT = 5
+STUDY_GUIDE_SEARCH_QUERY = "idées principales notions clés définitions exemples"
 
 
 def _retrieval_query(query: str) -> str:
@@ -227,8 +234,9 @@ def _search_course_segments(
     course_id: int,
     query: str,
     limit: int,
+    document_ids: list[int] | None = None,
 ) -> list[DocumentSearchResult]:
-    """Recherche les passages d'un cours après vérification de son propriétaire."""
+    """Recherche des passages autorisés, éventuellement limités à des documents."""
     find_course(session, course_id, owner_id)
     documents = {
         document.id: document
@@ -238,6 +246,7 @@ def _search_course_segments(
                 Document.status == "indexed",
             )
         ).all()
+        if document_ids is None or document.id in document_ids
     }
     if not documents:
         return []
@@ -275,6 +284,65 @@ def _search_course_segments(
             )
         )
     return results
+
+
+@router.post(
+    "/documents/{document_id}/study-guide",
+    response_model=StudyGuideResponse,
+)
+async def create_study_guide(
+    document_id: int,
+    request: StudyGuideRequest,
+    session: SessionDep,
+    settings: SettingsDep,
+    user: UserDep,
+    ollama: OllamaDep,
+) -> StudyGuideResponse:
+    """Génère un résumé ou une fiche à partir d'un document indexé du compte."""
+    document = find_document(session, document_id, user.id)
+    if document.status != "indexed":
+        raise HTTPException(
+            status_code=409,
+            detail="Indexez ce document avant de générer un support de révision.",
+        )
+
+    results = await run_in_threadpool(
+        _search_course_segments,
+        session,
+        settings,
+        user.id,
+        document.course_id,
+        STUDY_GUIDE_SEARCH_QUERY,
+        STUDY_GUIDE_SOURCE_LIMIT,
+        [document.id],
+    )
+    if not results:
+        raise HTTPException(
+            status_code=422,
+            detail="Aucun passage exploitable n'a été retrouvé dans ce document.",
+        )
+
+    generated = await ollama.generate_study_guide(request.kind, results)
+    sources_by_id = {
+        f"S{index}": source for index, source in enumerate(results, start=1)
+    }
+    citations = [
+        AnswerCitation(
+            citation_id=citation_id,
+            document_name=sources_by_id[citation_id].document_name,
+            file_format=sources_by_id[citation_id].file_format,
+            segment=sources_by_id[citation_id].segment,
+        )
+        for citation_id in generated.citation_ids
+    ]
+    return StudyGuideResponse(
+        kind=request.kind,
+        title=generated.title,
+        intro=generated.intro,
+        sections=generated.sections,
+        flashcards=generated.flashcards,
+        citations=citations,
+    )
 
 
 @router.post(
