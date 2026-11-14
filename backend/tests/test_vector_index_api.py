@@ -173,12 +173,18 @@ def test_ask_returns_citations_for_authorized_indexed_sources(api, monkeypatch) 
 
     response = client.post(
         f"/api/courses/{course_id}/ask",
-        json={"query": "Que faut-il retenir ?", "limit": 1},
+        json={"query": "Le chapitre parle de quoi ?", "limit": 1},
     )
 
     assert response.status_code == 200, response.text
-    assert calls["search"] == ("Que faut-il retenir ?", 1, course_id, [document["id"]], 1)
-    assert calls["generation"][0] == "Que faut-il retenir ?"
+    assert calls["search"] == (
+        "Le chapitre parle de quoi ? thèmes principaux idées clés notions abordées",
+        1,
+        course_id,
+        [document["id"]],
+        1,
+    )
+    assert calls["generation"][0] == "Le chapitre parle de quoi ?"
     assert response.json()["answer"] == "Une leçon importante [S1]."
     assert response.json()["citations"][0]["citation_id"] == "S1"
     assert response.json()["citations"][0]["document_name"] == "notes.txt"

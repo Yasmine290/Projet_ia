@@ -142,9 +142,10 @@ def test_generate_answer_requests_structured_output_and_accepts_known_citations(
     )
     assert requests[0]["stream"] is False
     assert requests[0]["format"]["properties"]["citation_ids"]["items"]["enum"] == ["S1"]
-    assert json.loads(requests[0]["messages"][1]["content"])["sources"][0]["content"] == (
-        "Une leçon importante."
-    )
+    user_message = requests[0]["messages"][1]["content"]
+    assert "Question : Que faut-il retenir ?" in user_message
+    assert "[S1]" in user_message
+    assert "Une leçon importante." in user_message
 
 
 def test_generate_answer_rejects_citations_not_in_retrieved_sources() -> None:
@@ -185,6 +186,51 @@ def test_generate_answer_rejects_citations_not_in_retrieved_sources() -> None:
         asyncio.run(service.generate_answer("Question ?", [source]))
 
     assert error.value.status_code == 502
+
+
+def test_generate_answer_rejects_response_that_only_repeats_question() -> None:
+    """Une question répétée avec des citations ne doit pas passer pour une réponse."""
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "answer": "Le chapitre parle de quoi ? [S1]",
+                            "citation_ids": ["S1"],
+                        },
+                        ensure_ascii=False,
+                    )
+                }
+            },
+        )
+
+    service = OllamaService(
+        base_url="http://ollama.test",
+        model_name="qwen3:4b",
+        transport=httpx.MockTransport(respond),
+    )
+    source = DocumentSearchResult(
+        segment=DocumentSegment(
+            id="1:page:1:0",
+            document_id=1,
+            course_id=2,
+            location_type="page",
+            location_number=1,
+            position=0,
+            content="Le cours aborde plusieurs notions.",
+        ),
+        document_name="cours.pdf",
+        file_format="pdf",
+        distance=0.1,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(service.generate_answer("Le chapitre parle de quoi ?", [source]))
+
+    assert error.value.status_code == 502
+    assert "répété la question" in error.value.detail
 
 
 def test_generate_answer_reports_generation_timeout() -> None:

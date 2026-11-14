@@ -1,3 +1,4 @@
+import unicodedata
 from typing import Annotated
 from uuid import uuid4
 
@@ -35,6 +36,30 @@ SessionDep = Annotated[Session, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 UserDep = Annotated[User, Depends(get_current_user)]
 OllamaDep = Annotated[OllamaService, Depends(get_ollama_service)]
+
+SUMMARY_QUERY_INTENTS = (
+    "de quoi parle",
+    "parle de quoi",
+    "de quoi traite",
+    "traite de quoi",
+    "resume",
+    "synthese",
+    "idee principale",
+    "theme principal",
+    "sujets abordes",
+    "vue d'ensemble",
+)
+
+
+def _retrieval_query(query: str) -> str:
+    """Élargit les recherches de synthèse vers les thèmes et idées principales."""
+    normalized = unicodedata.normalize("NFKD", query.casefold())
+    normalized = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+    if any(intent in normalized for intent in SUMMARY_QUERY_INTENTS):
+        return f"{query} thèmes principaux idées clés notions abordées"
+    return query
 
 
 def find_document(session: Session, document_id: int, owner_id: int) -> Document:
@@ -264,7 +289,7 @@ async def ask_course(
         settings,
         user.id,
         course_id,
-        request.query,
+        _retrieval_query(request.query),
         request.limit,
     )
     if not results:
