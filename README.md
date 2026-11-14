@@ -1,22 +1,25 @@
 # StudyAI
 
 StudyAI est un assistant local d'apprentissage et de révision. Le projet est
-développé progressivement afin de conserver la maquette existante lorsqu'elle
-sera fournie et de vérifier chaque module avant de passer au suivant.
+développé progressivement autour d'une interface React en JavaScript/JSX avec
+du CSS standard, et d'une API FastAPI.
+La maquette fournie sert de référence visuelle ; les écrans connectés affichent
+les données réelles de l'API plutôt que les contenus fictifs de la démonstration.
 
 ## État du projet
 
-Le dossier local ne contenait pas encore de fichiers de projet ni de maquette
-lors de l'audit initial. La phase 1 met en place l'API FastAPI et son contrôle
-de disponibilité d'Ollama. Le frontend sera intégré lorsque sa maquette sera
-disponible. La phase 2 ajoute SQLite, les cours et l'importation des PDF.
-Des comptes locaux protègent désormais les cours et documents par utilisateur.
+Le backend FastAPI gère l'authentification, les cours, les documents multi-formats,
+l'indexation vectorielle et les réponses RAG avec citations. Le frontend React
+intègre les parcours de connexion, cours, documents et assistant. Les quiz,
+résumés, progression et révisions restent indisponibles jusqu'à l'ajout de leurs
+services backend.
 
 ## Prérequis
 
 - Python 3.11 ou supérieur.
 - Ollama installé localement pour tester l'intégration au modèle.
 - Le modèle `qwen3:4b` (facultatif pour démarrer l'API).
+- Node.js 20 à 24 et npm (facultatifs, pour démarrer le frontend).
 
 L'API démarre même si Ollama ou le modèle configuré n'est pas disponible.
 
@@ -54,6 +57,23 @@ après une mise à jour contenant de nouvelles migrations. Par défaut, la base
 et les fichiers sont enregistrés dans `backend/data/`, qui n'est pas versionné.
 Les chemins relatifs de la configuration sont résolus depuis `backend/`.
 
+## Lancer le frontend
+
+Démarrez d'abord l'API sur le port 8001, puis, dans un autre terminal depuis la
+racine du dépôt :
+
+```powershell
+cd frontend
+npm ci
+npm run dev
+```
+
+Le frontend est disponible sur `http://127.0.0.1:5173`. Vite relaie les appels
+`/api` vers le backend local sur `http://127.0.0.1:8001`. Le fichier
+`frontend/.env.example` documente la configuration d'une autre adresse API.
+Les dépendances npm et les fichiers `.env.local` ne contiennent aucun secret du
+backend et le fichier `.env.local` ne doit pas être commité.
+
 ## Configuration d'Ollama
 
 Si Ollama est installé, démarrez-le puis téléchargez le modèle configuré :
@@ -82,9 +102,9 @@ Depuis `http://127.0.0.1:8001/docs` :
    protégées. Ne partagez pas ce jeton.
 4. Utiliser `POST /api/auth/logout` pour révoquer la session.
 
-`GET /api/auth/me` affiche le compte associé au jeton. L'interface React et les
-fonctions de changement ou récupération du mot de passe ne sont pas encore
-implémentées.
+`GET /api/auth/me` affiche le compte associé au jeton. L'interface React montre
+le nom du compte et permet de révoquer sa session ; le changement et la
+récupération du mot de passe ne sont pas encore implémentés.
 
 ### Anciens cours sans compte
 
