@@ -1,9 +1,11 @@
+import json
 import unicodedata
 from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Path as RoutePath, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,7 +15,7 @@ from app.db.database import get_session
 from app.models.document import Document
 from app.models.course import Course
 from app.models.user import User
-from app.schemas.answer import AnswerCitation, AnswerRequest, AnswerResponse
+from app.schemas.answer import AnswerCitation, AnswerRequest, AnswerResponse, GeneratedAnswer
 from app.schemas.document import (
     DocumentRead,
     DocumentSearchRequest,
@@ -23,7 +25,12 @@ from app.schemas.document import (
 )
 from app.services.auth import get_current_user
 from app.services.documents import extract_segments, resolve_document_path, store_document
-from app.services.ollama import OllamaService, get_ollama_service
+from app.services.ollama import (
+    AnswerStreamComplete,
+    AnswerStreamDelta,
+    OllamaService,
+    get_ollama_service,
+)
 from app.services.vector_index import (
     VectorIndexError,
     delete_document_segments,
@@ -300,6 +307,76 @@ async def ask_course(
         )
 
     generated = await ollama.generate_answer(request.query, results)
+    return _build_answer_response(request.query, generated, results)
+
+
+@router.post("/courses/{course_id}/ask/stream")
+async def ask_course_stream(
+    course_id: int,
+    request: AnswerRequest,
+    session: SessionDep,
+    settings: SettingsDep,
+    user: UserDep,
+    ollama: OllamaDep,
+) -> StreamingResponse:
+    """Envoie les fragments de réponse puis les citations vérifiées en SSE."""
+    results = await run_in_threadpool(
+        _search_course_segments,
+        session,
+        settings,
+        user.id,
+        course_id,
+        _retrieval_query(request.query),
+        request.limit,
+    )
+
+    async def events():
+        if not results:
+            response = AnswerResponse(
+                query=request.query,
+                answer="Aucun passage pertinent n'a été retrouvé dans les documents indexés du cours.",
+                citations=[],
+            )
+            yield _sse_event(
+                {"type": "complete", "response": response.model_dump(mode="json")}
+            )
+            return
+
+        completed = False
+        try:
+            async for event in ollama.generate_answer_stream(request.query, results):
+                if isinstance(event, AnswerStreamDelta):
+                    yield _sse_event({"type": "delta", "text": event.text})
+                elif isinstance(event, AnswerStreamComplete):
+                    response = _build_answer_response(
+                        request.query, event.generated, results
+                    )
+                    yield _sse_event(
+                        {"type": "complete", "response": response.model_dump(mode="json")}
+                    )
+                    completed = True
+            if not completed:
+                yield _sse_event(
+                    {
+                        "type": "error",
+                        "detail": "Le flux s'est terminé sans réponse complète.",
+                    }
+                )
+        except HTTPException as exc:
+            yield _sse_event({"type": "error", "detail": exc.detail})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _build_answer_response(
+    query: str,
+    generated: GeneratedAnswer,
+    results: list[DocumentSearchResult],
+) -> AnswerResponse:
     sources_by_id = {
         f"S{index}": source for index, source in enumerate(results, start=1)
     }
@@ -313,10 +390,14 @@ async def ask_course(
         for citation_id in generated.citation_ids
     ]
     return AnswerResponse(
-        query=request.query,
+        query=query,
         answer=generated.answer,
         citations=citations,
     )
+
+
+def _sse_event(event: dict[str, object]) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

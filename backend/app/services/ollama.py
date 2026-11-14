@@ -1,6 +1,8 @@
 import json
 import re
 import unicodedata
+from dataclasses import dataclass
+from typing import AsyncIterator
 
 import httpx
 from fastapi import Depends, HTTPException
@@ -10,6 +12,79 @@ from app.core.config import Settings, get_settings
 from app.schemas.answer import GeneratedAnswer
 from app.schemas.document import DocumentSearchResult
 from app.schemas.ollama import OllamaStatus
+
+
+@dataclass(frozen=True)
+class AnswerStreamDelta:
+    text: str
+
+
+@dataclass(frozen=True)
+class AnswerStreamComplete:
+    generated: GeneratedAnswer
+
+
+AnswerStreamEvent = AnswerStreamDelta | AnswerStreamComplete
+
+
+class _AnswerTextStreamParser:
+    """Décode progressivement le champ answer du JSON généré par Ollama."""
+
+    def __init__(self) -> None:
+        self.content = ""
+        self.emitted_text = ""
+
+    def feed(self, fragment: str) -> str:
+        self.content += fragment
+        match = re.search(r'"answer"\s*:\s*"', self.content)
+        if match is None:
+            return ""
+
+        start = match.end()
+        end = self._find_string_end(start)
+        encoded_text = self.content[start:end]
+        try:
+            current_text = json.loads(f'"{encoded_text}"')
+        except json.JSONDecodeError as exc:
+            raise ValueError("Le champ de réponse JSON est mal formé.") from exc
+
+        if current_text and 0xD800 <= ord(current_text[-1]) <= 0xDBFF:
+            current_text = current_text[:-1]
+        if not current_text.startswith(self.emitted_text):
+            raise ValueError("Le texte reçu ne prolonge pas la réponse déjà diffusée.")
+
+        delta = current_text[len(self.emitted_text) :]
+        self.emitted_text = current_text
+        return delta
+
+    def _find_string_end(self, start: int) -> int:
+        index = start
+        while index < len(self.content):
+            character = self.content[index]
+            if character == '"':
+                return index
+            if character == "\\":
+                if index + 1 >= len(self.content):
+                    return index
+                escape = self.content[index + 1]
+                if escape == "u":
+                    if index + 6 > len(self.content):
+                        return index
+                    if any(
+                        character not in "0123456789abcdefABCDEF"
+                        for character in self.content[index + 2 : index + 6]
+                    ):
+                        raise ValueError("Échappement Unicode invalide dans la réponse.")
+                    index += 6
+                    continue
+                if escape not in '"\\/bfnrt':
+                    raise ValueError("Échappement JSON invalide dans la réponse.")
+                index += 2
+                continue
+            if ord(character) < 0x20:
+                raise ValueError("Caractère de contrôle invalide dans la réponse JSON.")
+            index += 1
+        return index
 
 
 class OllamaService:
@@ -91,6 +166,151 @@ class OllamaService:
         self, question: str, sources: list[DocumentSearchResult]
     ) -> GeneratedAnswer:
         """Génère une réponse structurée et n'accepte que les citations fournies."""
+        source_ids, messages, format_schema = self._build_prompt(question, sources)
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.generation_timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "model": self.model_name,
+                        "messages": messages,
+                        "stream": False,
+                        "format": format_schema,
+                        "think": False,
+                        "options": {"temperature": 0.2, "num_predict": 512},
+                    },
+                )
+                response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise HTTPException(
+                status_code=504,
+                detail="La génération de la réponse par Ollama a dépassé le délai prévu.",
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise self._http_error(exc) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Ollama est inaccessible. Vérifiez qu'il est démarré.",
+            ) from exc
+
+        try:
+            payload = response.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Ollama a renvoyé une réponse JSON invalide.",
+            ) from exc
+
+        message = payload.get("message") if isinstance(payload, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise HTTPException(
+                status_code=502,
+                detail="La réponse d'Ollama ne contient pas de texte exploitable.",
+            )
+        return self._parse_generated_answer(question, source_ids, content)
+
+    async def generate_answer_stream(
+        self, question: str, sources: list[DocumentSearchResult]
+    ) -> AsyncIterator[AnswerStreamEvent]:
+        """Diffuse le texte généré puis renvoie la réponse après validation complète."""
+        source_ids, messages, format_schema = self._build_prompt(question, sources)
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "stream": True,
+            "format": format_schema,
+            "think": False,
+            "options": {"temperature": 0.2, "num_predict": 512},
+        }
+        parser = _AnswerTextStreamParser()
+        content = ""
+        completed = False
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.generation_timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                async with client.stream("POST", "/api/chat", json=payload) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            item = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            raise HTTPException(
+                                status_code=502,
+                                detail="Ollama a renvoyé un événement de génération invalide.",
+                            ) from exc
+                        if not isinstance(item, dict):
+                            raise HTTPException(
+                                status_code=502,
+                                detail="Ollama a renvoyé un événement de génération invalide.",
+                            )
+                        if item.get("error"):
+                            raise HTTPException(
+                                status_code=502,
+                                detail="Ollama a refusé la génération de la réponse.",
+                            )
+
+                        message = item.get("message")
+                        fragment = (
+                            message.get("content", "")
+                            if isinstance(message, dict)
+                            else ""
+                        )
+                        if not isinstance(fragment, str):
+                            raise HTTPException(
+                                status_code=502,
+                                detail="Ollama a renvoyé un fragment de réponse invalide.",
+                            )
+                        content += fragment
+                        try:
+                            delta = parser.feed(fragment)
+                        except ValueError as exc:
+                            raise HTTPException(
+                                status_code=502,
+                                detail="Ollama a renvoyé une réponse JSON mal formée.",
+                            ) from exc
+                        if delta:
+                            yield AnswerStreamDelta(text=delta)
+
+                        if item.get("done") is True:
+                            completed = True
+                            break
+        except httpx.TimeoutException as exc:
+            raise HTTPException(
+                status_code=504,
+                detail="La génération de la réponse par Ollama a dépassé le délai prévu.",
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise self._http_error(exc) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Ollama est inaccessible. Vérifiez qu'il est démarré.",
+            ) from exc
+
+        if not completed:
+            raise HTTPException(
+                status_code=502,
+                detail="Ollama a interrompu le flux avant de terminer la réponse.",
+            )
+        generated = self._parse_generated_answer(question, source_ids, content)
+        yield AnswerStreamComplete(generated=generated)
+
+    def _build_prompt(
+        self, question: str, sources: list[DocumentSearchResult]
+    ) -> tuple[list[str], list[dict[str, str]], dict[str, object]]:
         if not sources:
             raise ValueError("Au moins une source est requise pour générer une réponse.")
 
@@ -147,65 +367,11 @@ class OllamaService:
                 ),
             },
         ]
+        return source_ids, messages, format_schema
 
-        try:
-            async with httpx.AsyncClient(
-                base_url=self.base_url,
-                timeout=self.generation_timeout_seconds,
-                transport=self.transport,
-            ) as client:
-                response = await client.post(
-                    "/api/chat",
-                    json={
-                        "model": self.model_name,
-                        "messages": messages,
-                        "stream": False,
-                        "format": format_schema,
-                        "think": False,
-                        "options": {"temperature": 0.2, "num_predict": 512},
-                    },
-                )
-                response.raise_for_status()
-        except httpx.TimeoutException as exc:
-            raise HTTPException(
-                status_code=504,
-                detail="La génération de la réponse par Ollama a dépassé le délai prévu.",
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        f"Le modèle Ollama configuré ({self.model_name}) est "
-                        "introuvable. Vérifiez qu'il est installé."
-                    ),
-                ) from exc
-            raise HTTPException(
-                status_code=502,
-                detail="Ollama a refusé la génération de la réponse.",
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail="Ollama est inaccessible. Vérifiez qu'il est démarré.",
-            ) from exc
-
-        try:
-            payload = response.json()
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise HTTPException(
-                status_code=502,
-                detail="Ollama a renvoyé une réponse JSON invalide.",
-            ) from exc
-
-        message = payload.get("message") if isinstance(payload, dict) else None
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, str):
-            raise HTTPException(
-                status_code=502,
-                detail="La réponse d'Ollama ne contient pas de texte exploitable.",
-            )
-
+    def _parse_generated_answer(
+        self, question: str, source_ids: list[str], content: str
+    ) -> GeneratedAnswer:
         try:
             generated = GeneratedAnswer.model_validate_json(content)
         except ValidationError as exc:
@@ -242,6 +408,20 @@ class OllamaService:
             answer = f"{answer} {' '.join(missing_markers)}"
 
         return GeneratedAnswer(answer=answer, citation_ids=generated.citation_ids)
+
+    def _http_error(self, exc: httpx.HTTPStatusError) -> HTTPException:
+        if exc.response.status_code == 404:
+            return HTTPException(
+                status_code=503,
+                detail=(
+                    f"Le modèle Ollama configuré ({self.model_name}) est "
+                    "introuvable. Vérifiez qu'il est installé."
+                ),
+            )
+        return HTTPException(
+            status_code=502,
+            detail="Ollama a refusé la génération de la réponse.",
+        )
 
 
 def _normalize_answer(value: str) -> str:

@@ -138,6 +138,8 @@ Ne l'exécutez que si ce transfert est souhaité.
   (`{"query": "…", "limit": 5}` ; limite de 20 résultats).
 - `POST /api/courses/{course_id}/ask` : poser une question à partir des passages
   indexés et recevoir une réponse avec ses citations (`limit` de 1 à 5).
+- `POST /api/courses/{course_id}/ask/stream` : même génération, diffusée
+  progressivement au format Server-Sent Events.
 
 Exemple de corps pour `/ask` : `{"query": "Que faut-il retenir ?", "limit": 5}`.
 La génération transmet à l'instance Ollama configurée uniquement la question et
@@ -145,6 +147,9 @@ les passages retrouvés ; les identifiants de citation sont vérifiés et leurs
 marqueurs sont ajoutés ou validés avant le retour. Si aucun passage n'est
 retrouvé, l'API le signale sans appeler le modèle. Le délai maximal est configurable avec
 `OLLAMA_GENERATION_TIMEOUT_SECONDS` (120 secondes par défaut).
+Le flux `/ask/stream` envoie des événements `delta`, puis `complete` avec la même
+réponse et les citations vérifiées ; le temps total de génération dépend toujours
+d'Ollama.
 
 Formats actuellement acceptés : PDF, DOCX, PPTX, TXT, DOC et PPT. DOC/PPT sont
 convertis localement par LibreOffice en DOCX/PPTX lors de l'import ; le fichier

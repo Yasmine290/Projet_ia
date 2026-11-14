@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Bot, FileText, LoaderCircle, Send, Sparkles, UserRound } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useStudyData } from "../context/StudyDataContext";
-import { askCourse } from "../services/assistantApi";
+import { askCourseStream } from "../services/assistantApi";
 import { Badge, Button, Card, Field, inputClass, LoadingState, PageHeader } from "../components/ui";
 
 const suggestions = [
@@ -47,7 +47,10 @@ export default function AssistantPage() {
   }, [courses, courseId]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    endRef.current?.scrollIntoView({
+      behavior: submitting ? "auto" : "smooth",
+      block: "end",
+    });
   }, [messages, submitting]);
 
   async function sendQuestion(question = message) {
@@ -55,23 +58,38 @@ export default function AssistantPage() {
     if (!text || submitting || !selectedCourse) return;
 
     // Les échanges restent uniquement en mémoire ; l'API traite chaque question indépendamment.
-    setMessages((current) => [...current, { id: createMessageId(), role: "user", text }]);
+    const assistantId = createMessageId();
+    setMessages((current) => [
+      ...current,
+      { id: createMessageId(), role: "user", text },
+      { id: assistantId, role: "assistant", text: "", citations: [], streaming: true },
+    ]);
     setMessage("");
     setRequestError("");
     setLastFailedQuery("");
     setSubmitting(true);
     try {
-      const response = await askCourse(token, selectedCourse.id, text);
-      setMessages((current) => [
-        ...current,
-        {
-          id: createMessageId(),
-          role: "assistant",
-          text: response.answer,
-          citations: response.citations,
-        },
-      ]);
+      const response = await askCourseStream(token, selectedCourse.id, text, (delta) => {
+        setMessages((current) =>
+          current.map((entry) =>
+            entry.id === assistantId ? { ...entry, text: entry.text + delta } : entry,
+          ),
+        );
+      });
+      setMessages((current) =>
+        current.map((entry) =>
+          entry.id === assistantId
+            ? {
+                ...entry,
+                text: response.answer,
+                citations: response.citations,
+                streaming: false,
+              }
+            : entry,
+        ),
+      );
     } catch (error) {
+      setMessages((current) => current.filter((entry) => entry.id !== assistantId));
       setRequestError(error.message);
       setLastFailedQuery(text);
     } finally {
@@ -134,7 +152,13 @@ export default function AssistantPage() {
                   {entry.role === "user" ? <UserRound size={16} /> : <Bot size={17} />}
                 </span>
                 <div className="message__bubble">
-                  <p className="message__text">{entry.text}</p>
+                  {entry.text && <p className="message__text">{entry.text}</p>}
+                  {entry.streaming && !entry.text && (
+                    <div className="assistant-thinking">
+                      <LoaderCircle size={16} />
+                      StudyAI prépare une réponse…
+                    </div>
+                  )}
                   {entry.citations?.length > 0 && (
                     <div className="citation-list">
                       <p className="citation-list__title">Sources</p>
@@ -152,17 +176,6 @@ export default function AssistantPage() {
                 </div>
               </div>
             ))}
-            {submitting && (
-              <div className="message">
-                <span className="message__avatar">
-                  <Bot size={17} />
-                </span>
-                <div className="assistant-thinking">
-                  <LoaderCircle size={16} />
-                  StudyAI prépare une réponse…
-                </div>
-              </div>
-            )}
             <div ref={endRef} />
           </div>
 

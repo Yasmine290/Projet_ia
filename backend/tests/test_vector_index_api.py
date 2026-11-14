@@ -1,9 +1,15 @@
+import json
+
 import pytest
 
 from app.api import documents as document_api
 from app.main import app
 from app.schemas.answer import GeneratedAnswer
-from app.services.ollama import get_ollama_service
+from app.services.ollama import (
+    AnswerStreamComplete,
+    AnswerStreamDelta,
+    get_ollama_service,
+)
 from app.services.vector_index import VectorIndexError
 from test_data import api
 
@@ -189,6 +195,73 @@ def test_ask_returns_citations_for_authorized_indexed_sources(api, monkeypatch) 
     assert response.json()["citations"][0]["citation_id"] == "S1"
     assert response.json()["citations"][0]["document_name"] == "notes.txt"
     assert response.json()["citations"][0]["segment"]["location_number"] == 1
+
+
+def test_streaming_ask_returns_deltas_and_verified_citations(api, monkeypatch) -> None:
+    """Le flux émet les fragments puis les citations seulement après validation."""
+    client, _, _ = api
+    course_id = client.post("/api/courses", json={"title": "Histoire"}).json()["id"]
+    uploaded = client.post(
+        f"/api/courses/{course_id}/documents",
+        files={"file": ("notes.txt", b"Une lecon importante.", "text/plain")},
+    )
+    document = uploaded.json()
+
+    def fake_search(query, owner_id, requested_course, document_ids, limit, chroma_path):
+        return [
+            {
+                "id": f"{document['id']}:line:1:0",
+                "content": "Une leçon importante.",
+                "metadata": {
+                    "document_id": document["id"],
+                    "location_type": "line",
+                    "location_number": 1,
+                    "position": 0,
+                },
+                "distance": 0.12,
+            }
+        ]
+
+    class FakeOllamaService:
+        async def generate_answer_stream(self, question, sources):
+            yield AnswerStreamDelta(text="Une leçon ")
+            yield AnswerStreamDelta(text="importante [S1].")
+            yield AnswerStreamComplete(
+                generated=GeneratedAnswer(
+                    answer="Une leçon importante [S1].",
+                    citation_ids=["S1"],
+                )
+            )
+
+    monkeypatch.setattr(document_api, "index_document_segments", lambda *args: None)
+    monkeypatch.setattr(document_api, "search_document_segments", fake_search)
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_ollama_service,
+        lambda: FakeOllamaService(),
+    )
+    indexed = client.post(f"/api/documents/{document['id']}/index")
+    assert indexed.status_code == 200, indexed.text
+
+    response = client.post(
+        f"/api/courses/{course_id}/ask/stream",
+        json={"query": "Que faut-il retenir ?", "limit": 1},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [event["text"] for event in events if event["type"] == "delta"] == [
+        "Une leçon ",
+        "importante [S1].",
+    ]
+    completed = next(event["response"] for event in events if event["type"] == "complete")
+    assert completed["answer"] == "Une leçon importante [S1]."
+    assert completed["citations"][0]["citation_id"] == "S1"
 
 
 def test_ask_without_relevant_passages_does_not_call_ollama(api, monkeypatch) -> None:

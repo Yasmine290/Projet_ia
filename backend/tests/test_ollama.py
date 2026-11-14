@@ -10,7 +10,12 @@ from app.main import app
 from app.schemas.answer import GeneratedAnswer
 from app.schemas.document import DocumentSearchResult, DocumentSegment
 from app.schemas.ollama import OllamaStatus
-from app.services.ollama import OllamaService, get_ollama_service
+from app.services.ollama import (
+    AnswerStreamComplete,
+    AnswerStreamDelta,
+    OllamaService,
+    get_ollama_service,
+)
 
 client = TestClient(app)
 
@@ -146,6 +151,68 @@ def test_generate_answer_requests_structured_output_and_accepts_known_citations(
     assert "Question : Que faut-il retenir ?" in user_message
     assert "[S1]" in user_message
     assert "Une leçon importante." in user_message
+
+
+def test_generate_answer_stream_decodes_json_answer_fragments() -> None:
+    """Les fragments JSON et échappements Unicode sont diffusés comme du texte."""
+    requests = []
+    fragments = [
+        '{"answer":"L\\u00',
+        'e9tude progresse [S1].","citation_ids":["S1"]}',
+    ]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        lines = [
+            json.dumps(
+                {"message": {"content": fragment}, "done": False},
+                ensure_ascii=False,
+            )
+            for fragment in fragments
+        ]
+        lines.append(
+            json.dumps(
+                {"message": {"content": ""}, "done": True},
+                ensure_ascii=False,
+            )
+        )
+        return httpx.Response(200, content=("\n".join(lines) + "\n").encode("utf-8"))
+
+    service = OllamaService(
+        base_url="http://ollama.test",
+        model_name="qwen3:4b",
+        transport=httpx.MockTransport(respond),
+    )
+    source = DocumentSearchResult(
+        segment=DocumentSegment(
+            id="1:page:1:0",
+            document_id=1,
+            course_id=2,
+            location_type="page",
+            location_number=1,
+            position=0,
+            content="Le document présente une notion.",
+        ),
+        document_name="cours.pdf",
+        file_format="pdf",
+        distance=0.1,
+    )
+
+    async def collect_events():
+        return [
+            event
+            async for event in service.generate_answer_stream(
+                "Que présente le document ?", [source]
+            )
+        ]
+
+    events = asyncio.run(collect_events())
+
+    deltas = [event.text for event in events if isinstance(event, AnswerStreamDelta)]
+    completed = next(event for event in events if isinstance(event, AnswerStreamComplete))
+    assert "".join(deltas) == "Létude progresse [S1]."
+    assert completed.generated.answer == "Létude progresse [S1]."
+    assert requests[0]["stream"] is True
 
 
 def test_generate_answer_rejects_citations_not_in_retrieved_sources() -> None:
