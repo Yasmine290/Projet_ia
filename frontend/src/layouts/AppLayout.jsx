@@ -93,14 +93,6 @@ export default function AppLayout() {
           ))}
         </nav>
         <div className="sidebar__footer">
-          {!collapsed && (
-            <div className="sidebar__note">
-              <p className="sidebar__note-title">Mode local</p>
-              <p className="sidebar__note-text">
-                Vos cours et fichiers passent par l’API configurée.
-              </p>
-            </div>
-          )}
           <button
             onClick={() => setCollapsed(!collapsed)}
             className="sidebar__collapse"

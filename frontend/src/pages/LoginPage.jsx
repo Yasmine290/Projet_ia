@@ -138,9 +138,6 @@ export default function LoginPage() {
               {mode === "login" ? "Créer un compte" : "Se connecter"}
             </button>
           </p>
-          <p className="auth-safety">
-            Ne partagez jamais votre mot de passe ni votre jeton de session.
-          </p>
         </section>
       </div>
     </main>

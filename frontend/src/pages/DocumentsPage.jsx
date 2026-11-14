@@ -178,8 +178,7 @@ export default function DocumentsPage() {
             <Info size={16} />
             <span>
               L’indexation est une étape distincte. Un document non indexé n’est pas utilisé par
-              l’assistant. La taille maximale dépend de la configuration du backend (10 Mio par
-              défaut).
+              l’assistant.
             </span>
           </p>
         </div>

@@ -191,26 +191,6 @@ svg {
   border-top: 1px solid rgb(255 255 255 / 10%);
 }
 
-.sidebar__note {
-  margin-bottom: 12px;
-  padding: 12px;
-  border-radius: 12px;
-  background: rgb(255 255 255 / 8%);
-}
-
-.sidebar__note-title {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.sidebar__note-text {
-  margin: 5px 0 0;
-  color: #cbd5e1;
-  font-size: 11px;
-  line-height: 1.45;
-}
-
 .sidebar__collapse,
 .icon-button {
   display: flex;
@@ -885,14 +865,6 @@ svg {
 
 .text-button:hover {
   text-decoration: underline;
-}
-
-.auth-safety {
-  margin-top: 18px;
-  color: var(--soft);
-  font-size: 11px;
-  line-height: 1.5;
-  text-align: center;
 }
 
 .stats-grid {

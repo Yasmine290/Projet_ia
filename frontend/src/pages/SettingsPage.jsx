@@ -56,9 +56,6 @@ export default function SettingsPage() {
             </span>
             <div>
               <h2 className="settings-card__title">Session sécurisée</h2>
-              <p className="settings-card__description">
-                Le jeton reste dans cette session de navigateur et peut être révoqué ici.
-              </p>
             </div>
           </div>
           <Button variant="danger" onClick={logout} disabled={submitting}>
