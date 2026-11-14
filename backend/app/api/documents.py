@@ -14,6 +14,7 @@ from app.core.config import Settings, get_settings
 from app.db.database import get_session
 from app.models.document import Document
 from app.models.course import Course
+from app.models.study_guide import StudyGuide
 from app.models.user import User
 from app.schemas.answer import AnswerCitation, AnswerRequest, AnswerResponse, GeneratedAnswer
 from app.schemas.document import (
@@ -335,13 +336,40 @@ async def create_study_guide(
         )
         for citation_id in generated.citation_ids
     ]
-    return StudyGuideResponse(
+    study_guide = StudyGuide(
+        document_id=document.id,
         kind=request.kind,
         title=generated.title,
         intro=generated.intro,
-        sections=generated.sections,
-        flashcards=generated.flashcards,
-        citations=citations,
+        sections=[section.model_dump(mode="json") for section in generated.sections],
+        flashcards=[card.model_dump(mode="json") for card in generated.flashcards],
+        citations=[citation.model_dump(mode="json") for citation in citations],
+    )
+    session.add(study_guide)
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    session.refresh(study_guide)
+    return study_guide
+
+
+@router.get(
+    "/documents/{document_id}/study-guides",
+    response_model=list[StudyGuideResponse],
+)
+def list_document_study_guides(
+    document_id: int, session: SessionDep, user: UserDep
+) -> list[StudyGuide]:
+    """Retourne l'historique des supports enregistrés pour un document autorisé."""
+    find_document(session, document_id, user.id)
+    return list(
+        session.scalars(
+            select(StudyGuide)
+            .where(StudyGuide.document_id == document_id)
+            .order_by(StudyGuide.created_at.desc(), StudyGuide.id.desc())
+        ).all()
     )
 
 

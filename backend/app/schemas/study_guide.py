@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -43,9 +44,14 @@ class GeneratedStudyGuide(BaseModel):
 
 
 class StudyGuideResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    document_id: int
     kind: StudyGuideKind
     title: str
     intro: str
     sections: list[StudyGuideSection]
     flashcards: list[StudyGuideFlashcard]
     citations: list[AnswerCitation]
+    created_at: datetime

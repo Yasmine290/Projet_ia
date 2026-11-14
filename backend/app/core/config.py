@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     app_name: str = "StudyAI API"
     ollama_base_url: HttpUrl = "http://localhost:11434"
     ollama_model: str = "qwen3:4b"
-    ollama_generation_timeout_seconds: int = Field(default=120, gt=0, le=600)
+    ollama_generation_timeout_seconds: int = Field(default=600, gt=0, le=600)
     database_url: str = "sqlite:///./data/studyai.db"
     chroma_path: Path = Path("data/chroma")
     upload_dir: Path = Path("data/uploads")

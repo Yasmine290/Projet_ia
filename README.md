@@ -141,22 +141,27 @@ Ne l'exécutez que si ce transfert est souhaité.
   indexés et recevoir une réponse avec ses citations (`limit` de 1 à 5).
 - `POST /api/courses/{course_id}/ask/stream` : même génération, diffusée
   progressivement au format Server-Sent Events.
-- `POST /api/documents/{document_id}/study-guide` : générer un résumé ou une fiche
-  à partir des passages indexés d'un document (`kind` : `short`, `detailed` ou `sheet`).
+- `POST /api/documents/{document_id}/study-guide` : générer et enregistrer un résumé
+  ou une fiche à partir des passages indexés d'un document (`kind` : `short`,
+  `detailed` ou `sheet`).
+- `GET /api/documents/{document_id}/study-guides` : consulter l'historique des
+  supports enregistrés pour un document.
 
 Exemple de corps pour `/ask` : `{"query": "Que faut-il retenir ?", "limit": 5}`.
 La génération transmet à l'instance Ollama configurée uniquement la question et
 les passages retrouvés ; les identifiants de citation sont vérifiés et leurs
 marqueurs sont ajoutés ou validés avant le retour. Si aucun passage n'est
 retrouvé, l'API le signale sans appeler le modèle. Le délai maximal est configurable avec
-`OLLAMA_GENERATION_TIMEOUT_SECONDS` (120 secondes par défaut).
+`OLLAMA_GENERATION_TIMEOUT_SECONDS` (600 secondes par défaut).
 Le flux `/ask/stream` envoie des événements `delta`, puis `complete` avec la même
 réponse et les citations vérifiées ; le temps total de génération dépend toujours
 d'Ollama.
 Pour `/study-guide`, le corps est `{"kind": "short"}`. Les modes `short` et
 `detailed` créent un résumé ; le mode `sheet` ajoute des cartes question-réponse.
-Les supports sont générés à la demande à partir des passages les plus pertinents
-du document indexé et retournent les sources utilisées.
+Les supports sont générés à partir des passages les plus pertinents du document
+indexé, retournent les sources utilisées et sont conservés dans SQLite. Chaque
+génération crée une nouvelle entrée dans l'historique ; les entrées sont
+supprimées automatiquement avec leur document.
 
 Formats actuellement acceptés : PDF, DOCX, PPTX, TXT, DOC et PPT. DOC/PPT sont
 convertis localement par LibreOffice en DOCX/PPTX lors de l'import ; le fichier

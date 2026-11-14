@@ -40,9 +40,12 @@ export default function SummariesPage() {
   const [documentId, setDocumentId] = useState("");
   const [kind, setKind] = useState("short");
   const [generated, setGenerated] = useState(null);
+  const [savedGuides, setSavedGuides] = useState([]);
+  const [loadingSavedGuides, setLoadingSavedGuides] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [notice, setNotice] = useState("");
   const [requestError, setRequestError] = useState("");
+  const [historyError, setHistoryError] = useState("");
 
   useEffect(() => {
     if (!courses.some((course) => String(course.id) === courseId)) {
@@ -58,6 +61,38 @@ export default function SummariesPage() {
     [documents, courseId],
   );
   const selectedDocument = courseDocuments.find((document) => String(document.id) === documentId);
+  const selectedDocumentId = selectedDocument?.id;
+
+  useEffect(() => {
+    let active = true;
+    if (!selectedDocumentId) {
+      setSavedGuides([]);
+      setLoadingSavedGuides(false);
+      setHistoryError("");
+      return () => {
+        active = false;
+      };
+    }
+
+    setSavedGuides([]);
+    setHistoryError("");
+    setLoadingSavedGuides(true);
+    studyGuideApi
+      .list(token, selectedDocumentId)
+      .then((guides) => {
+        if (active) setSavedGuides(guides);
+      })
+      .catch((historyLoadError) => {
+        if (active) setHistoryError(historyLoadError.message);
+      })
+      .finally(() => {
+        if (active) setLoadingSavedGuides(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedDocumentId, token]);
 
   useEffect(() => {
     if (documentId && !courseDocuments.some((document) => String(document.id) === documentId)) {
@@ -69,6 +104,7 @@ export default function SummariesPage() {
     setCourseId(value);
     setDocumentId("");
     setGenerated(null);
+    setSavedGuides([]);
     setNotice("");
     setRequestError("");
   }
@@ -79,9 +115,14 @@ export default function SummariesPage() {
     setGenerated(null);
     setNotice("");
     setRequestError("");
+    setHistoryError("");
     try {
       const result = await studyGuideApi.generate(token, selectedDocument.id, kind);
       setGenerated(result);
+      setSavedGuides((currentGuides) => [
+        result,
+        ...currentGuides.filter((guide) => guide.id !== result.id),
+      ]);
     } catch (generationError) {
       setRequestError(generationError.message);
     } finally {
@@ -102,6 +143,12 @@ export default function SummariesPage() {
     } catch {
       setNotice("La copie n’est pas disponible dans ce navigateur.");
     }
+  }
+
+  function showSavedGuide(guide) {
+    setGenerated(guide);
+    setKind(guide.kind);
+    setRequestError("");
   }
 
   if (loading) return <LoadingState label="Chargement de vos documents…" />;
@@ -182,6 +229,7 @@ export default function SummariesPage() {
                 setDocumentId(event.target.value);
                 setGenerated(null);
                 setRequestError("");
+                setHistoryError("");
               }}
               disabled={!courseDocuments.length || generating}
             >
@@ -225,9 +273,53 @@ export default function SummariesPage() {
         </div>
       </Card>
 
+      {selectedDocument && (
+        <Card className="study-guide-history">
+          <div className="study-guide-history__heading">
+            <span className="study-guide-form__icon">
+              <NotebookPen size={19} />
+            </span>
+            <div>
+              <h2>Supports enregistrés</h2>
+              <p>Les générations précédentes de ce document restent disponibles ici.</p>
+            </div>
+          </div>
+          {historyError && (
+            <div role="alert" className="notice notice--error">
+              {historyError}
+            </div>
+          )}
+          {loadingSavedGuides ? (
+            <LoadingState label="Chargement des supports enregistrés…" />
+          ) : savedGuides.length ? (
+            <div className="study-guide-history__list">
+              {savedGuides.map((guide) => (
+                <button
+                  key={guide.id}
+                  type="button"
+                  className={`study-guide-history__item${
+                    generated?.id === guide.id ? " study-guide-history__item--selected" : ""
+                  }`}
+                  aria-pressed={generated?.id === guide.id}
+                  onClick={() => showSavedGuide(guide)}
+                >
+                  <span>{kindLabels[guide.kind]}</span>
+                  <strong>{guide.title}</strong>
+                  <time dateTime={guide.created_at}>
+                    {new Date(guide.created_at).toLocaleString("fr-FR")}
+                  </time>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="study-guide-history__empty">Aucun support enregistré pour ce document.</p>
+          )}
+        </Card>
+      )}
+
       {generating && (
         <Card className="study-guide-loading">
-          <LoadingState label="Génération du support à partir des sources…" />
+          <LoadingState label="La génération peut prendre quelques minutes. Laissez cette page ouverte…" />
         </Card>
       )}
 

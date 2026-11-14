@@ -1,9 +1,12 @@
 import json
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.api import documents as document_api
 from app.main import app
+from app.models.study_guide import StudyGuide
 from app.schemas.answer import GeneratedAnswer
 from app.schemas.study_guide import (
     GeneratedStudyGuide,
@@ -271,7 +274,7 @@ def test_streaming_ask_returns_deltas_and_verified_citations(api, monkeypatch) -
 
 def test_study_guide_uses_only_the_selected_indexed_document(api, monkeypatch) -> None:
     """La génération cible un document du compte et renvoie ses sources vérifiées."""
-    client, _, _ = api
+    client, _, engine = api
     course_id = client.post("/api/courses", json={"title": "Biologie"}).json()["id"]
     uploaded = client.post(
         f"/api/courses/{course_id}/documents",
@@ -335,9 +338,31 @@ def test_study_guide_uses_only_the_selected_indexed_document(api, monkeypatch) -
     )
     assert calls["generation"][0] == "sheet"
     assert response.json()["title"] == "Photosynthèse"
+    assert response.json()["document_id"] == document["id"]
+    assert response.json()["id"]
     assert len(response.json()["flashcards"]) == 3
     assert response.json()["citations"][0]["document_name"] == "biologie.txt"
     assert response.json()["citations"][0]["segment"]["location_number"] == 1
+
+    second_response = client.post(
+        f"/api/documents/{document['id']}/study-guide",
+        json={"kind": "sheet"},
+    )
+    saved_guides = client.get(
+        f"/api/documents/{document['id']}/study-guides"
+    )
+    assert second_response.status_code == 200, second_response.text
+    assert saved_guides.status_code == 200, saved_guides.text
+    assert [guide["id"] for guide in saved_guides.json()] == [
+        second_response.json()["id"],
+        response.json()["id"],
+    ]
+    assert saved_guides.json()[0]["citations"] == response.json()["citations"]
+
+    deleted = client.delete(f"/api/documents/{document['id']}")
+    assert deleted.status_code == 204, deleted.text
+    with Session(engine) as session:
+        assert session.scalar(select(StudyGuide.id)) is None
 
 
 def test_study_guide_rejects_a_document_that_is_not_indexed(api, monkeypatch) -> None:

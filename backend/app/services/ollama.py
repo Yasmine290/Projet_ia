@@ -96,7 +96,7 @@ class OllamaService:
         base_url: str,
         model_name: str,
         transport: httpx.AsyncBaseTransport | None = None,
-        generation_timeout_seconds: int = 120,
+        generation_timeout_seconds: int = 600,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name

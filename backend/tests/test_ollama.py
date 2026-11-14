@@ -434,6 +434,7 @@ def test_generate_answer_reports_generation_timeout() -> None:
         model_name="qwen3:4b",
         transport=httpx.MockTransport(timeout),
     )
+    assert service.generation_timeout_seconds == 600
     source = DocumentSearchResult(
         segment=DocumentSegment(
             id="1:line:1:0",
