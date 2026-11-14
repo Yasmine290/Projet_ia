@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, FileText, LoaderCircle, Send, Sparkles, UserRound } from "lucide-react";
+import { Bot, ChevronDown, FileText, LoaderCircle, Send, Sparkles, UserRound } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useStudyData } from "../context/StudyDataContext";
 import { askCourseStream } from "../services/assistantApi";
@@ -160,8 +160,15 @@ export default function AssistantPage() {
                     </div>
                   )}
                   {entry.citations?.length > 0 && (
-                    <div className="citation-list">
-                      <p className="citation-list__title">Sources</p>
+                    <details className="citation-list">
+                      <summary className="citation-list__title">
+                        Sources ({entry.citations.length})
+                        <ChevronDown
+                          className="citation-list__chevron"
+                          size={16}
+                          aria-hidden="true"
+                        />
+                      </summary>
                       {entry.citations.map((citation) => (
                         <div key={citation.citation_id} className="citation">
                           <p className="citation__source">
@@ -171,7 +178,7 @@ export default function AssistantPage() {
                           <p className="citation__content">{citation.segment.content}</p>
                         </div>
                       ))}
-                    </div>
+                    </details>
                   )}
                 </div>
               </div>

@@ -1577,12 +1577,29 @@ svg {
 }
 
 .citation-list__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin: 0;
   color: var(--soft);
+  cursor: pointer;
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.08em;
+  list-style: none;
   text-transform: uppercase;
+}
+
+.citation-list__title::-webkit-details-marker {
+  display: none;
+}
+
+.citation-list__chevron {
+  transition: transform 160ms ease;
+}
+
+.citation-list[open] .citation-list__chevron {
+  transform: rotate(180deg);
 }
 
 .citation {
